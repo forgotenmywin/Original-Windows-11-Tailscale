@@ -9,61 +9,52 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Setup RDP & User
+      - name: Configure RDP Service & User
         shell: powershell
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          $pass = "WindowsRDP#2025"
-          net user "runneradmin" $pass
-          echo "RDP_PASS=$pass" >> $env:GITHUB_ENV
-
-      - name: Install Tailscale
+          $runnerAdminPass = "WindowsRDP#2025"
+          net user "runneradmin" $runnerAdminPass
+          echo "RDP_USER=runneradmin" >> $env:GITHUB_ENV
+          echo "RDP_PASS=$runnerAdminPass" >> $env:GITHUB_ENV
+          
+      - name: Install and Connect Tailscale
         shell: powershell
         run: |
           Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile "tailscale-setup.exe"
           Start-Process -FilePath ".\tailscale-setup.exe" -ArgumentList "/S" -Wait
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          Start-Sleep 10
-          $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-          echo "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-runner-$env:GITHUB_RUN_ID
+          $tsIP = $null
+          for ($i=1; $i -le 15; $i++){ 
+            $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+            if($tsIP){break}
+            Start-Sleep 4 
+          }
+          if (-not $tsIP) { 
+            exit 1 
+          }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: Keep RDP Alive
+      - name: Display Connection Details and Keep Alive
         shell: powershell
         run: |
-          Write-Host "================ RDP READY ================"
-          Write-Host "IP: ${{ env.TAILSCALE_IP }}"
-          Write-Host "User: runneradmin"
-          Write-Host "Pass: ${{ env.RDP_PASS }}"
-          Write-Host "=========================================="
-          Write-Host "Auto-reconnect active, checking every 30s..."
-
-          $authKey = "${{ secrets.TAILSCALE_AUTH_KEY }}"
-
-          # اسکریپت نگهدارنده رو به صورت رشته تعریف کن (بدون Here-String)
-          $script = 'while ($true) {
-            try {
-              $sessions = query session 2>$null
-              if ($LASTEXITCODE -ne 0 -or $sessions -notmatch "runneradmin") {
-                Write-Host "[$(Get-Date)] RDP lost, restarting..."
-                Restart-Service TermService -Force -ErrorAction SilentlyContinue
-                Start-Sleep 5
-                & "$env:ProgramFiles\Tailscale\tailscale.exe" logout -ErrorAction SilentlyContinue
-                Start-Sleep 2
-                & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=' + $authKey + ' -ErrorAction SilentlyContinue
-                Write-Host "[$(Get-Date)] RDP restarted."
-              }
-            } catch {
-              # ignore any errors
-            }
-            Start-Sleep 30
-          }'
-
-          $script | Out-File -FilePath "$env:TEMP\keeper.ps1" -Encoding UTF8
-          Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$env:TEMP\keeper.ps1`"" -WindowStyle Hidden
-
+          Write-Host "================ RDP IS READY ================"
+          Write-Host "IP Address: ${{ env.TAILSCALE_IP }}"
+          Write-Host "Username  : ${{ env.RDP_USER }}"
+          Write-Host "Password  : ${{ env.RDP_PASS }}"
+          Write-Host "=============================================="
+          Write-Host ""
+          Write-Host "NLA is DISABLED - You will connect directly!"
+          Write-Host ""
+          Write-Host "On your phone (Windows App or any RDP client):"
+          Write-Host "   Address: ${{ env.TAILSCALE_IP }}"
+          Write-Host "   Username: runneradmin"
+          Write-Host "   Password: WindowsRDP#2025"
+          Write-Host ""
+          Write-Host "Session will stay alive for 6 hours..."
           while ($true) {
-            Write-Host "[$(Get-Date)] Keeper running..."
-            Start-Sleep 60
+            Start-Sleep 300
           }
+ای
