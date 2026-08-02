@@ -40,25 +40,26 @@ jobs:
           Write-Host "Auto-reconnect active, checking every 30s..."
 
           $authKey = "${{ secrets.TAILSCALE_AUTH_KEY }}"
-          $script = @"
-while (`$true) {
-  try {
-    `$sessions = query session 2>`$null
-    if (`$LASTEXITCODE -ne 0 -or `$sessions -notmatch "runneradmin") {
-      Write-Host "[`$(Get-Date)] RDP lost, restarting..."
-      Restart-Service TermService -Force -ErrorAction SilentlyContinue
-      Start-Sleep 5
-      & "`$env:ProgramFiles\Tailscale\tailscale.exe" logout -ErrorAction SilentlyContinue
-      Start-Sleep 2
-      & "`$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=$authKey -ErrorAction SilentlyContinue
-      Write-Host "[`$(Get-Date)] RDP restarted."
-    }
-  } catch {
-    # ignore any errors
-  }
-  Start-Sleep 30
-}
-"@
+
+          # اسکریپت نگهدارنده رو به صورت رشته تعریف کن (بدون Here-String)
+          $script = 'while ($true) {
+            try {
+              $sessions = query session 2>$null
+              if ($LASTEXITCODE -ne 0 -or $sessions -notmatch "runneradmin") {
+                Write-Host "[$(Get-Date)] RDP lost, restarting..."
+                Restart-Service TermService -Force -ErrorAction SilentlyContinue
+                Start-Sleep 5
+                & "$env:ProgramFiles\Tailscale\tailscale.exe" logout -ErrorAction SilentlyContinue
+                Start-Sleep 2
+                & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=' + $authKey + ' -ErrorAction SilentlyContinue
+                Write-Host "[$(Get-Date)] RDP restarted."
+              }
+            } catch {
+              # ignore any errors
+            }
+            Start-Sleep 30
+          }'
+
           $script | Out-File -FilePath "$env:TEMP\keeper.ps1" -Encoding UTF8
           Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$env:TEMP\keeper.ps1`"" -WindowStyle Hidden
 
