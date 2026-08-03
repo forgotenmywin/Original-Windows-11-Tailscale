@@ -20,53 +20,6 @@ jobs:
           echo "RDP_USER=runneradmin" >> $env:GITHUB_ENV
           echo "RDP_PASS=$runnerAdminPass" >> $env:GITHUB_ENV
           
-      - name: Install and Configure OpenSSH & WinRM
-        shell: powershell
-        run: |
-          Write-Host "========== Installing OpenSSH Server =========="
-          Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
-          Start-Service sshd
-          Set-Service -Name sshd -StartupType 'Automatic'
-          New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (SSH)' -Enabled True -Direction Inbound -Protocol TCP -LocalPort 22 -Action Allow -ErrorAction SilentlyContinue
-          
-          Write-Host "========== Configuring WinRM (PSRemoting) =========="
-          # Enable WinRM
-          Enable-PSRemoting -Force
-          
-          # ---------- Service settings ----------
-          Set-Item WSMan:\localhost\Service\Auth\Basic -Value $true -Force
-          Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $true -Force
-          
-          # ---------- Client settings ----------
-          Set-Item WSMan:\localhost\Client\Auth\Basic -Value $true -Force
-          Set-Item WSMan:\localhost\Client\AllowUnencrypted -Value $true -Force
-          Set-Item WSMan:\localhost\Client\TrustedHosts -Value "*" -Force
-          
-          # Enable HTTP listener (if exists)
-          if (Test-Path WSMan:\localhost\Service\EnableCompatibilityHttpListener) {
-            Set-Item WSMan:\localhost\Service\EnableCompatibilityHttpListener -Value $true -Force
-          }
-          
-          # Firewall rules
-          New-NetFirewallRule -Name 'WinRM-HTTP-In-TCP' -DisplayName 'WinRM HTTP' -Enabled True -Direction Inbound -Protocol TCP -LocalPort 5985 -Action Allow -ErrorAction SilentlyContinue
-          New-NetFirewallRule -Name 'WinRM-HTTPS-In-TCP' -DisplayName 'WinRM HTTPS' -Enabled True -Direction Inbound -Protocol TCP -LocalPort 5986 -Action Allow -ErrorAction SilentlyContinue
-          
-          # Add user to WinRM group
-          Add-LocalGroupMember -Group "WinRMRemoteWMIUsers__" -Member "runneradmin" -ErrorAction SilentlyContinue
-          
-          # Restart WinRM
-          Restart-Service WinRM -Force
-          
-          # ---------- Test WinRM locally (correct syntax) ----------
-          Write-Host "Testing WinRM locally..."
-          $cred = New-Object System.Management.Automation.PSCredential("runneradmin", (ConvertTo-SecureString "WindowsRDP#2025" -AsPlainText -Force))
-          $sessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
-          $session = New-PSSession -ComputerName "127.0.0.1" -Credential $cred -SessionOption $sessionOption -Authentication Basic -ErrorAction Stop
-          Remove-PSSession $session
-          Write-Host "✅ WinRM test successful!"
-          
-          Write-Host "SSH and WinRM setup completed successfully!"
-
       - name: Install and Connect Tailscale
         shell: powershell
         run: |
@@ -87,27 +40,20 @@ jobs:
       - name: Display Connection Details and Keep Alive
         shell: powershell
         run: |
-          Write-Host "================ CONNECTION DETAILS ================"
-          Write-Host "IP Address   : ${{ env.TAILSCALE_IP }}"
-          Write-Host "Username     : ${{ env.RDP_USER }}"
-          Write-Host "Password     : ${{ env.RDP_PASS }}"
-          Write-Host "===================================================="
+          Write-Host "================ RDP IS READY ================"
+          Write-Host "IP Address: ${{ env.TAILSCALE_IP }}"
+          Write-Host "Username  : ${{ env.RDP_USER }}"
+          Write-Host "Password  : ${{ env.RDP_PASS }}"
+          Write-Host "=============================================="
           Write-Host ""
-          Write-Host "[1] RDP (Remote Desktop):"
-          Write-Host "    Address: ${{ env.TAILSCALE_IP }}:3389"
+          Write-Host "NLA is DISABLED - You will connect directly!"
           Write-Host ""
-          Write-Host "[2] SSH (Command Line / Putty):"
-          Write-Host "    ssh ${{ env.RDP_USER }}@${{ env.TAILSCALE_IP }}"
-          Write-Host "    (When prompted, enter password: ${{ env.RDP_PASS }})"
+          Write-Host "On your phone (Windows App or any RDP client):"
+          Write-Host "   Address: ${{ env.TAILSCALE_IP }}"
+          Write-Host "   Username: runneradmin"
+          Write-Host "   Password: WindowsRDP#2025"
           Write-Host ""
-          Write-Host "[3] WinRM (PowerShell Remoting):"
-          Write-Host "    On Windows/Linux with PowerShell Core:"
-          Write-Host "    Enter-PSSession -ComputerName ${{ env.TAILSCALE_IP }} -Credential ${{ env.RDP_USER }} -Authentication Basic -AllowRedirection"
-          Write-Host ""
-          Write-Host "    On Linux/macOS with evil-winrm:"
-          Write-Host "    evil-winrm -i ${{ env.TAILSCALE_IP }} -u ${{ env.RDP_USER }} -p '${{ env.RDP_PASS }}'"
-          Write-Host ""
-          Write-Host "============ SESSION WILL STAY ALIVE FOR 6 HOURS ============"
+          Write-Host "Session will stay alive for 6 hours..."
           while ($true) {
             Start-Sleep 300
           }
