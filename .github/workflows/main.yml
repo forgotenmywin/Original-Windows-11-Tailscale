@@ -57,10 +57,11 @@ jobs:
           # Restart WinRM
           Restart-Service WinRM -Force
           
-          # ---------- Test WinRM locally ----------
+          # ---------- Test WinRM locally (correct syntax) ----------
           Write-Host "Testing WinRM locally..."
           $cred = New-Object System.Management.Automation.PSCredential("runneradmin", (ConvertTo-SecureString "WindowsRDP#2025" -AsPlainText -Force))
-          $session = New-PSSession -ComputerName "127.0.0.1" -Credential $cred -Authentication Basic -AllowRedirection -ErrorAction Stop
+          $sessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
+          $session = New-PSSession -ComputerName "127.0.0.1" -Credential $cred -SessionOption $sessionOption -Authentication Basic -ErrorAction Stop
           Remove-PSSession $session
           Write-Host "✅ WinRM test successful!"
           
