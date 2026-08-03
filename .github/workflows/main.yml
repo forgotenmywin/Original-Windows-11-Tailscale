@@ -30,13 +30,36 @@ jobs:
           New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (SSH)' -Enabled True -Direction Inbound -Protocol TCP -LocalPort 22 -Action Allow -ErrorAction SilentlyContinue
           
           Write-Host "========== Configuring WinRM (PSRemoting) =========="
+          # Enable WinRM
           Enable-PSRemoting -Force
-          Set-Item WSMan:\localhost\Client\TrustedHosts -Value "*" -Force
+          
+          # Configure service to allow Basic authentication and unencrypted traffic
           Set-Item WSMan:\localhost\Service\Auth\Basic -Value $true -Force
           Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $true -Force
+          
+          # Set TrustedHosts on both client and service
+          Set-Item WSMan:\localhost\Client\TrustedHosts -Value "*" -Force
+          Set-Item WSMan:\localhost\Service\TrustedHosts -Value "*" -Force
+          
+          # Enable HTTP listener (compatibility)
+          Set-Item WSMan:\localhost\Service\EnableCompatibilityHttpListener -Value $true -Force
+          
+          # Add firewall rules for WinRM
           New-NetFirewallRule -Name 'WinRM-HTTP-In-TCP' -DisplayName 'WinRM HTTP' -Enabled True -Direction Inbound -Protocol TCP -LocalPort 5985 -Action Allow -ErrorAction SilentlyContinue
           New-NetFirewallRule -Name 'WinRM-HTTPS-In-TCP' -DisplayName 'WinRM HTTPS' -Enabled True -Direction Inbound -Protocol TCP -LocalPort 5986 -Action Allow -ErrorAction SilentlyContinue
-          Restart-Service WinRM
+          
+          # Add runneradmin to WinRM group
+          Add-LocalGroupMember -Group "WinRMRemoteWMIUsers__" -Member "runneradmin" -ErrorAction SilentlyContinue
+          
+          # Restart WinRM service
+          Restart-Service WinRM -Force
+          
+          # Test WinRM locally
+          Write-Host "Testing WinRM locally..."
+          $testSession = New-PSSession -ComputerName "127.0.0.1" -Credential (New-Object System.Management.Automation.PSCredential("runneradmin", (ConvertTo-SecureString "WindowsRDP#2025" -AsPlainText -Force))) -Authentication Basic -ErrorAction Stop
+          Remove-PSSession $testSession
+          Write-Host "✅ WinRM test successful!"
+          
           Write-Host "SSH and WinRM setup completed successfully!"
 
       - name: Install and Connect Tailscale
@@ -73,8 +96,11 @@ jobs:
           Write-Host "    (When prompted, enter password: ${{ env.RDP_PASS }})"
           Write-Host ""
           Write-Host "[3] WinRM (PowerShell Remoting):"
-          Write-Host "    Enter-PSSession -ComputerName ${{ env.TAILSCALE_IP }} -Credential ${{ env.RDP_USER }}"
-          Write-Host "    (Or use Invoke-Command -ComputerName ${{ env.TAILSCALE_IP }} -ScriptBlock { ... })"
+          Write-Host "    On Windows/Linux with PowerShell Core:"
+          Write-Host "    Enter-PSSession -ComputerName ${{ env.TAILSCALE_IP }} -Credential ${{ env.RDP_USER }} -Authentication Basic -AllowRedirection"
+          Write-Host ""
+          Write-Host "    On Linux/macOS with evil-winrm:"
+          Write-Host "    evil-winrm -i ${{ env.TAILSCALE_IP }} -u ${{ env.RDP_USER }} -p '${{ env.RDP_PASS }}'"
           Write-Host ""
           Write-Host "============ SESSION WILL STAY ALIVE FOR 6 HOURS ============"
           while ($true) {
