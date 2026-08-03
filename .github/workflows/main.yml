@@ -30,34 +30,22 @@ jobs:
           New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (SSH)' -Enabled True -Direction Inbound -Protocol TCP -LocalPort 22 -Action Allow -ErrorAction SilentlyContinue
           
           Write-Host "========== Configuring WinRM (PSRemoting) =========="
-          # Enable WinRM
           Enable-PSRemoting -Force
-          
-          # Configure service to allow Basic authentication and unencrypted traffic
           Set-Item WSMan:\localhost\Service\Auth\Basic -Value $true -Force
           Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $true -Force
-          
-          # Set TrustedHosts on both client and service
           Set-Item WSMan:\localhost\Client\TrustedHosts -Value "*" -Force
-          Set-Item WSMan:\localhost\Service\TrustedHosts -Value "*" -Force
-          
-          # Enable HTTP listener (compatibility)
-          Set-Item WSMan:\localhost\Service\EnableCompatibilityHttpListener -Value $true -Force
-          
-          # Add firewall rules for WinRM
+          if (Test-Path WSMan:\localhost\Service\EnableCompatibilityHttpListener) {
+            Set-Item WSMan:\localhost\Service\EnableCompatibilityHttpListener -Value $true -Force
+          }
           New-NetFirewallRule -Name 'WinRM-HTTP-In-TCP' -DisplayName 'WinRM HTTP' -Enabled True -Direction Inbound -Protocol TCP -LocalPort 5985 -Action Allow -ErrorAction SilentlyContinue
           New-NetFirewallRule -Name 'WinRM-HTTPS-In-TCP' -DisplayName 'WinRM HTTPS' -Enabled True -Direction Inbound -Protocol TCP -LocalPort 5986 -Action Allow -ErrorAction SilentlyContinue
-          
-          # Add runneradmin to WinRM group
           Add-LocalGroupMember -Group "WinRMRemoteWMIUsers__" -Member "runneradmin" -ErrorAction SilentlyContinue
-          
-          # Restart WinRM service
           Restart-Service WinRM -Force
           
-          # Test WinRM locally
           Write-Host "Testing WinRM locally..."
-          $testSession = New-PSSession -ComputerName "127.0.0.1" -Credential (New-Object System.Management.Automation.PSCredential("runneradmin", (ConvertTo-SecureString "WindowsRDP#2025" -AsPlainText -Force))) -Authentication Basic -ErrorAction Stop
-          Remove-PSSession $testSession
+          $cred = New-Object System.Management.Automation.PSCredential("runneradmin", (ConvertTo-SecureString "WindowsRDP#2025" -AsPlainText -Force))
+          $session = New-PSSession -ComputerName "127.0.0.1" -Credential $cred -Authentication Basic -ErrorAction Stop
+          Remove-PSSession $session
           Write-Host "✅ WinRM test successful!"
           
           Write-Host "SSH and WinRM setup completed successfully!"
