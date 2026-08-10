@@ -1,4 +1,4 @@
-name: Pure RDP via Tailscale
+name: Pure RDP via Tailscale (10 min)
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ jobs:
           net user "runneradmin" $runnerAdminPass
           echo "RDP_USER=runneradmin" >> $env:GITHUB_ENV
           echo "RDP_PASS=$runnerAdminPass" >> $env:GITHUB_ENV
-          
+
       - name: Install and Connect Tailscale
         shell: powershell
         run: |
@@ -32,12 +32,10 @@ jobs:
             if($tsIP){break}
             Start-Sleep 4 
           }
-          if (-not $tsIP) { 
-            exit 1 
-          }
+          if (-not $tsIP) { exit 1 }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: Display Connection Details and Keep Alive
+      - name: Display Connection Details
         shell: powershell
         run: |
           Write-Host "================ RDP IS READY ================"
@@ -46,14 +44,65 @@ jobs:
           Write-Host "Password  : ${{ env.RDP_PASS }}"
           Write-Host "=============================================="
           Write-Host ""
-          Write-Host "NLA is DISABLED - You will connect directly!"
-          Write-Host ""
-          Write-Host "On your phone (Windows App or any RDP client):"
-          Write-Host "   Address: ${{ env.TAILSCALE_IP }}"
-          Write-Host "   Username: runneradmin"
-          Write-Host "   Password: WindowsRDP#2025"
-          Write-Host ""
-          Write-Host "Session will stay alive for 6 hours..."
-          while ($true) {
-            Start-Sleep 300
-          }
+          Write-Host "⏳ This Windows will SHUT DOWN in 10 minutes (600s)."
+          Write-Host "Connect via RDP now!"
+
+      - name: Run GPU Tests and Auto-Shutdown
+        shell: powershell
+        run: |
+          $pythonLines = @(
+            'import requests',
+            'import time',
+            'import os',
+            'import sys',
+            '',
+            'API = "https://pam-latitude-homeless-prince.trycloudflare.com"',
+            '',
+            'def gpu(op, **params):',
+            '    try:',
+            '        r = requests.post(f"{API}/job", json={"op": op, **params}, timeout=10)',
+            '        jid = r.json()["job_id"]',
+            '        print(f"Job {jid} queued...")',
+            '        while True:',
+            '            time.sleep(0.3)',
+            '            r = requests.get(f"{API}/result/{jid}", timeout=10)',
+            '            d = r.json()',
+            '            if d.get("status") == "done":',
+            '                return d["result"]',
+            '            elif "error" in d:',
+            '                return {"error": d["error"]}',
+            '    except Exception as e:',
+            '        return {"error": str(e)}',
+            '',
+            'if __name__ == "__main__":',
+            '    start = time.time()',
+            '    LIFETIME = 600  # 10 minutes',
+            '',
+            '    print("=== GPU Tests from VPS (via Cloudflare) ===")',
+            '    tests = [',
+            '        ("Vector Add (10M)", "add", {"n": 10_000_000}),',
+            '        ("Matrix Mult (4096)", "matmul", {"size": 4096}),',
+            '        ("Matrix Mult (8192)", "matmul", {"size": 8192}),',
+            '    ]',
+            '    for label, op, params in tests:',
+            '        print(f"\n{label}:")',
+            '        result = gpu(op, **params)',
+            '        if isinstance(result, dict) and "ms" in result:',
+            '            print(f"   ✅ Time: {result[''ms'']:.2f} ms")',
+            '        else:',
+            '            print(f"   ❌ Error: {result}")',
+            '',
+            '    print("\n✅ Tests finished.")',
+            '',
+            '    elapsed = time.time() - start',
+            '    remain = LIFETIME - elapsed',
+            '    if remain > 0:',
+            '        print(f"\n⏳ Waiting {remain:.1f} seconds before shutdown...")',
+            '        time.sleep(remain)',
+            '    else:',
+            '        print("\n⏳ Time is already up, shutting down...")',
+            '',
+            '    os.system("shutdown /s /t 0")'
+          )
+          $pythonLines | Out-File -FilePath script.py -Encoding utf8
+          python script.py
