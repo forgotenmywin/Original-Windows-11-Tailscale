@@ -50,11 +50,17 @@ jobs:
       - name: Install Python requests and Run GPU Tests
         shell: powershell
         run: |
+          Write-Host "-----------------------------------------------"
+          Write-Host "📦 Installing Python packages..."
           pip install requests
-
+          Write-Host "✅ Packages installed."
+          Write-Host "-----------------------------------------------"
+          
+          Write-Host "🚀 Creating Python script..."
           $pythonLines = @(
             'import requests',
             'import time',
+            'import sys',
             '',
             'API = "https://pam-latitude-homeless-prince.trycloudflare.com"',
             '',
@@ -75,28 +81,50 @@ jobs:
             '        return {"error": str(e)}',
             '',
             'if __name__ == "__main__":',
-            '    print("Testing GPU from VPS...")',
+            '    print("=" * 50)',
+            '    print("🖥️  Starting GPU Tests from VPS...")',
+            '    print("=" * 50)',
+            '    sys.stdout.flush()',
+            '    ',
             '    tests = [',
             '        ("Vector Add (10M)", "add", {"n": 10_000_000}),',
             '        ("Matrix Mult (4096)", "matmul", {"size": 4096}),',
             '        ("Matrix Mult (8192)", "matmul", {"size": 8192}),',
             '    ]',
-            '    for label, op, params in tests:',
-            '        print(f"\n{label}:")',
+            '    ',
+            '    for idx, (label, op, params) in enumerate(tests, 1):',
+            '        print(f"\n[{idx}/{len(tests)}] {label}:")',
+            '        sys.stdout.flush()',
             '        result = gpu(op, **params)',
             '        if isinstance(result, dict) and "ms" in result:',
-            '            print(f"   Time: {result[''ms'']:.2f}ms")',
+            '            print(f"   ✅ Time: {result[''ms'']:.2f} ms")',
             '        else:',
-            '            print(f"   Error: {result}")',
-            '    print("\n✅ All tests attempted.")'
+            '            print(f"   ❌ Error: {result}")',
+            '        sys.stdout.flush()',
+            '    ',
+            '    print("\n" + "=" * 50)',
+            '    print("✅ All tests attempted!")',
+            '    print("=" * 50)'
           )
 
           $pythonLines | Out-File -FilePath script.py -Encoding ascii
-          python script.py
+          Write-Host "✅ Script created: script.py"
+          Write-Host "-----------------------------------------------"
+          Write-Host "📜 Running Python script (live logs):"
+          Write-Host "-----------------------------------------------"
+          
+          # اجرای پایتون با -u برای نمایش لحظه‌ای لاگ‌ها
+          python -u script.py
+          
+          Write-Host "-----------------------------------------------"
+          Write-Host "✅ Python script finished."
+          Write-Host "-----------------------------------------------"
 
       - name: Shutdown after 10 Minutes
         shell: powershell
         run: |
+          Write-Host "-----------------------------------------------"
           Write-Host "⏳ 10 minutes passed, shutting down Windows..."
+          Write-Host "-----------------------------------------------"
           Start-Sleep 5
           shutdown /s /t 0
