@@ -9,7 +9,6 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      # 1. دریافت کدهای ریپازیتوری (برای دسترسی به main.py)
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -42,35 +41,35 @@ jobs:
       - name: Display Connection Details
         shell: powershell
         run: |
-          Write-Host "================ RDP IS READY ================"
-          Write-Host "IP Address: ${{ env.TAILSCALE_IP }}"
-          Write-Host "Username  : ${{ env.RDP_USER }}"
-          Write-Host "Password  : ${{ env.RDP_PASS }}"
-          Write-Host "=============================================="
-          Write-Host ""
-          Write-Host "⏳ This Windows will SHUT DOWN in 10 minutes (600s)."
-          Write-Host "Connect via RDP now!"
+          Write-Output '================ RDP IS READY ================'
+          Write-Output "IP Address: ${{ env.TAILSCALE_IP }}"
+          Write-Output "Username  : ${{ env.RDP_USER }}"
+          Write-Output "Password  : ${{ env.RDP_PASS }}"
+          Write-Output '=============================================='
+          Write-Output ''
+          Write-Output '⏳ This Windows will SHUT DOWN in 10 minutes (600s).'
+          Write-Output 'Connect via RDP now!'
 
       - name: Install dependencies and Run main.py
         shell: powershell
         run: |
-          Write-Host "-----------------------------------------------"
-          Write-Host "📦 Installing Python packages..."
+          Write-Output '-----------------------------------------------'
+          Write-Output '📦 Installing Python packages...'
           pip install requests
-          Write-Host "✅ Packages installed."
-          Write-Host "-----------------------------------------------"
-          Write-Host "🚀 Running main.py from repository..."
-          Write-Host "-----------------------------------------------"
+          Write-Output '✅ Packages installed.'
+          Write-Output '-----------------------------------------------'
+          Write-Output '🚀 Running main.py from repository...'
+          Write-Output '-----------------------------------------------'
           python -u main.py
-          Write-Host "-----------------------------------------------"
-          Write-Host "✅ main.py finished."
-          Write-Host "-----------------------------------------------"
+          Write-Output '-----------------------------------------------'
+          Write-Output '✅ main.py finished.'
+          Write-Output '-----------------------------------------------'
 
       - name: Shutdown after 10 Minutes
         shell: powershell
         run: |
-          Write-Host "-----------------------------------------------"
-          Write-Host "⏳ 10 minutes passed, shutting down Windows..."
-          Write-Host "-----------------------------------------------"
+          Write-Output '-----------------------------------------------'
+          Write-Output '⏳ 10 minutes passed, shutting down Windows...'
+          Write-Output '-----------------------------------------------'
           Start-Sleep 5
           shutdown /s /t 0
