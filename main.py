@@ -1,36 +1,92 @@
 import requests
 import time
+import sys
+import os
 
+# تنظیم UTF-8 برای ویندوز (جلوگیری از خطای Unicode)
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding='utf-8')
+
+# آدرس API (در صورت نیاز تغییر دهید)
 API = "https://pam-latitude-homeless-prince.trycloudflare.com"
 
 def gpu(op, **params):
-    r = requests.post(f"{API}/job", json={"op": op, **params}, timeout=10)
-    jid = r.json()["job_id"]
-    print(f"Job {jid} queued...")
-    
-    while True:
-        time.sleep(0.3)
-        r = requests.get(f"{API}/result/{jid}", timeout=10)
-        d = r.json()
-        if d.get("status") == "done":
-            return d["result"]
-        elif "error" in d:
-            return d
+    """
+    ارسال درخواست به API برای اجرای عملیات GPU
+    op: نوع عملیات (مثلاً 'add' یا 'matmul')
+    **params: پارامترهای عملیات (مثلاً n=10_000_000)
+    """
+    try:
+        # ارسال درخواست برای شروع job
+        r = requests.post(f"{API}/job", json={"op": op, **params}, timeout=10)
+        jid = r.json()["job_id"]
+        print(f"Job {jid} queued...")
+        
+        start_time = time.time()
+        timeout = 30  # حداکثر ۳۰ ثانیه منتظر نتیجه بمان
+        
+        while True:
+            # اگر زمان timeout تمام شد، خطا برگردان
+            if time.time() - start_time > timeout:
+                return {"error": "Job timeout (30s)"}
+            
+            time.sleep(0.3)  # هر ۳۰۰ میلی‌ثانیه یکبار چک کن
+            r = requests.get(f"{API}/result/{jid}", timeout=10)
+            d = r.json()
+            
+            if d.get("status") == "done":
+                return d["result"]
+            elif "error" in d:
+                return d
+    except Exception as e:
+        return {"error": str(e)}
 
-# تست
 if __name__ == "__main__":
-    print("Testing GPU from VPS...")
+    # ========== تنظیمات ==========
+    LIFETIME = 60  # ۱ دقیقه (۶۰ ثانیه) - اینجا زمان کل اجرا را مشخص کنید
+    # =============================
     
-    print("\n1. Vector Add (10M):")
-    r = gpu("add", n=10_000_000)
-    print(f"   Time: {r['ms']:.2f}ms")
+    start = time.time()
     
-    print("\n2. Matrix Multiply (4096x4096):")
-    r = gpu("matmul", size=4096)
-    print(f"   Time: {r['ms']:.2f}ms")
+    print("=" * 50)
+    print("Starting GPU Tests from VPS...")
+    print("=" * 50)
+    sys.stdout.flush()
+
+    # لیست تست‌ها: (برچسب, نوع عملیات, پارامترها)
+    tests = [
+        ("Vector Add (10,000,000 elements)", "add", {"n": 10_000_000}),
+        ("Matrix Multiply (4096x4096)", "matmul", {"size": 4096}),
+        ("Matrix Multiply (8192x8192)", "matmul", {"size": 8192}),
+    ]
+
+    # اجرای تست‌ها
+    for idx, (label, op, params) in enumerate(tests, 1):
+        print(f"\n[{idx}/{len(tests)}] {label}:")
+        sys.stdout.flush()
+        
+        result = gpu(op, **params)
+        
+        if isinstance(result, dict) and "ms" in result:
+            print(f"   Time: {result['ms']:.2f} ms")
+        else:
+            print(f"   Error: {result}")
+        sys.stdout.flush()
+
+    print("\n" + "=" * 50)
+    print("All tests attempted.")
+    print("=" * 50)
+
+    # ========== منتظر ماندن تا پایان زمان تعیین‌شده ==========
+    elapsed = time.time() - start
+    remain = LIFETIME - elapsed
     
-    print("\n3. Matrix Multiply (8192x8192):")
-    r = gpu("matmul", size=8192)
-    print(f"   Time: {r['ms']:.2f}ms")
-    
-    print("\n✅ All done! GPU works from VPS!")
+    if remain > 0:
+        print(f"\nWaiting {remain:.1f} seconds before shutdown...")
+        time.sleep(remain)
+    else:
+        print("\nTime is up, shutting down...")
+    # =====================================================
+
+    # خاموش کردن ویندوز
+    os.system("shutdown /s /t 0")
