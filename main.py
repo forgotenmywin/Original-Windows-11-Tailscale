@@ -2,6 +2,10 @@ import requests
 import time
 import sys
 
+# تنظیم UTF-8 برای ویندوز
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding='utf-8')
+
 API = "https://pam-latitude-homeless-prince.trycloudflare.com"
 
 def gpu(op, **params):
@@ -22,7 +26,7 @@ def gpu(op, **params):
 
 if __name__ == "__main__":
     print("=" * 50)
-    print("🖥️  Starting GPU Tests from VPS...")
+    print("Starting GPU Tests from VPS...")
     print("=" * 50)
     sys.stdout.flush()
 
@@ -37,11 +41,11 @@ if __name__ == "__main__":
         sys.stdout.flush()
         result = gpu(op, **params)
         if isinstance(result, dict) and "ms" in result:
-            print(f"   ✅ Time: {result['ms']:.2f} ms")
+            print(f"   Time: {result['ms']:.2f} ms")
         else:
-            print(f"   ❌ Error: {result}")
+            print(f"   Error: {result}")
         sys.stdout.flush()
 
     print("\n" + "=" * 50)
-    print("✅ All tests attempted!")
+    print("All tests attempted.")
     print("=" * 50)
