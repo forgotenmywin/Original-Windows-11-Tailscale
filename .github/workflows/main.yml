@@ -1,4 +1,4 @@
-name: Pure RDP via Tailscale (10 min)
+name: Pure RDP via Tailscale
 
 on:
   workflow_dispatch:
@@ -9,20 +9,16 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Configure RDP Service & User
         shell: powershell
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           $runnerAdminPass = "WindowsRDP#2025"
           net user "runneradmin" $runnerAdminPass
           echo "RDP_USER=runneradmin" >> $env:GITHUB_ENV
           echo "RDP_PASS=$runnerAdminPass" >> $env:GITHUB_ENV
-
+          
       - name: Install and Connect Tailscale
         shell: powershell
         run: |
@@ -35,43 +31,19 @@ jobs:
             if($tsIP){break}
             Start-Sleep 4 
           }
-          if (-not $tsIP) { exit 1 }
+          if (-not $tsIP) { 
+            exit 1 
+          }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: Display Connection Details
+      - name: Display Connection Details and Keep Alive
         shell: powershell
         run: |
-          Write-Output '=================================================='
-          Write-Output 'RDP IS READY'
-          Write-Output '=================================================='
-          Write-Output "IP Address: ${{ env.TAILSCALE_IP }}"
-          Write-Output "Username  : ${{ env.RDP_USER }}"
-          Write-Output "Password  : ${{ env.RDP_PASS }}"
-          Write-Output '=================================================='
-          Write-Output ''
-          Write-Output 'This Windows will SHUT DOWN in 10 minutes (600s).'
-          Write-Output 'Connect via RDP now!'
-
-      - name: Install dependencies and Run main.py
-        shell: powershell
-        run: |
-          Write-Output '-----------------------------------------------'
-          Write-Output 'Installing Python packages...'
-          pip install requests
-          Write-Output 'Packages installed.'
-          Write-Output '-----------------------------------------------'
-          Write-Output 'Running main.py from repository...'
-          Write-Output '-----------------------------------------------'
-          python -u main.py
-          Write-Output '-----------------------------------------------'
-          Write-Output 'main.py finished.'
-          Write-Output '-----------------------------------------------'
-
-      - name: Shutdown after 10 Minutes
-        shell: powershell
-        run: |
-          Write-Output '-----------------------------------------------'
-          Write-Output '10 minutes passed, shutting down Windows...'
-          Write-Output '-----------------------------------------------'
-          Start-Sleep 5
-          shutdown /s /t 0
+          Write-Host "================ RDP IS READY ================"
+          Write-Host "IP Address: ${{ env.TAILSCALE_IP }}"
+          Write-Host "Username  : ${{ env.RDP_USER }}"
+          Write-Host "Password  : ${{ env.RDP_PASS }}"
+          Write-Host "=============================================="
+          while ($true) {
+            Start-Sleep 300
+          }
