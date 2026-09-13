@@ -11,12 +11,14 @@ jobs:
     steps:
 
       # ============================================================
-      # 1. فعال‌سازی RDP و ساخت/تنظیم کاربر
+      # 1. Configure RDP
       # ============================================================
       - name: Configure RDP Service & User
         shell: powershell
         run: |
-          Write-Host "=== Configuring Remote Desktop ==="
+          Write-Host "=========================================="
+          Write-Host " Configuring Remote Desktop"
+          Write-Host "=========================================="
 
           # Enable RDP
           Set-ItemProperty `
@@ -25,44 +27,56 @@ jobs:
             -Value 0 `
             -Force
 
-          # Allow RDP through Windows Firewall
+          # Enable RDP firewall rules
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-          # Configure RDP service
-          Set-Service -Name TermService -StartupType Automatic
-          Start-Service -Name TermService -ErrorAction SilentlyContinue
+          # Start RDP service
+          Set-Service `
+            -Name "TermService" `
+            -StartupType Automatic
 
-          # Runner administrator password
+          Start-Service `
+            -Name "TermService" `
+            -ErrorAction SilentlyContinue
+
+          # RDP credentials
           $runnerAdminPass = "WindowsRDP#2025"
 
           # Set password
-          net user "runneradmin" "$runnerAdminPass"
+          net user runneradmin "$runnerAdminPass"
 
-          # Make sure account is active
-          net user "runneradmin" /active:yes
+          # Make sure account is enabled
+          net user runneradmin /active:yes
 
-          # Store variables for later steps
-          "RDP_USER=runneradmin" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "RDP_PASS=$runnerAdminPass" | Out-File -FilePath $env:GITHUB_ENV -Append
+          # Save variables
+          "RDP_USER=runneradmin" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
 
+          "RDP_PASS=$runnerAdminPass" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
+
+          Write-Host ""
           Write-Host "RDP configuration completed."
 
 
       # ============================================================
-      # 2. نصب IIS
+      # 2. Install IIS
       # ============================================================
       - name: Install IIS
         shell: powershell
         run: |
-          Write-Host "=== Installing IIS ==="
+          Write-Host "=========================================="
+          Write-Host " Installing IIS"
+          Write-Host "=========================================="
 
           Import-Module ServerManager
 
+          # Main IIS role
           Install-WindowsFeature `
             -Name Web-Server `
             -IncludeManagementTools
 
-          # Useful IIS components
+          # IIS components
           $features = @(
             "Web-Common-Http",
             "Web-Default-Doc",
@@ -76,26 +90,37 @@ jobs:
           )
 
           foreach ($feature in $features) {
+
+            Write-Host ""
+            Write-Host "Installing $feature ..."
+
             try {
-              Write-Host "Installing $feature ..."
-              Install-WindowsFeature -Name $feature -ErrorAction Stop
+
+              Install-WindowsFeature `
+                -Name $feature `
+                -ErrorAction Stop
+
             }
             catch {
-              Write-Host "Warning: Could not install $feature"
-              Write-Host $_
+
+              Write-Host "::warning::Could not install $feature"
+              Write-Host $_.Exception.Message
             }
           }
 
+          Write-Host ""
           Write-Host "IIS installation completed."
 
 
       # ============================================================
-      # 3. نصب ASP.NET 4.5 / .NET Framework IIS integration
+      # 3. ASP.NET / .NET Framework IIS components
       # ============================================================
-      - name: Install ASP.NET and .NET Framework IIS Components
+      - name: Install ASP.NET and .NET IIS Components
         shell: powershell
         run: |
-          Write-Host "=== Installing ASP.NET / .NET IIS Components ==="
+          Write-Host "=========================================="
+          Write-Host " Installing ASP.NET / .NET components"
+          Write-Host "=========================================="
 
           Import-Module ServerManager
 
@@ -107,59 +132,85 @@ jobs:
           )
 
           foreach ($feature in $features) {
+
+            Write-Host ""
+            Write-Host "Installing $feature ..."
+
             try {
-              Write-Host "Installing $feature ..."
-              Install-WindowsFeature -Name $feature -ErrorAction Stop
+
+              Install-WindowsFeature `
+                -Name $feature `
+                -ErrorAction Stop
+
             }
             catch {
-              Write-Host "Warning: $feature could not be installed."
-              Write-Host $_
+
+              Write-Host "::warning::Could not install $feature"
+              Write-Host $_.Exception.Message
             }
           }
 
+          Write-Host ""
           Write-Host "ASP.NET components completed."
 
 
       # ============================================================
-      # 4. فعال کردن WCF HTTP Activation
+      # 4. WCF HTTP Activation
       # ============================================================
       - name: Enable WCF HTTP Activation
         shell: powershell
         run: |
-          Write-Host "=== Enabling WCF HTTP Activation ==="
+          Write-Host "=========================================="
+          Write-Host " Enabling WCF HTTP Activation"
+          Write-Host "=========================================="
 
-          # Check Windows version
+          Write-Host ""
+          Write-Host "Windows version:"
+
           Get-CimInstance Win32_OperatingSystem |
             Select-Object Caption, Version
 
-          # Enable .NET Framework 4 WCF HTTP Activation
-          $dismResult = & dism.exe /online /enable-feature `
+          Write-Host ""
+          Write-Host "Running DISM..."
+
+          & dism.exe /online /enable-feature `
             /featurename:WCF-HTTP-Activation45 `
             /all `
             /norestart
 
-          $dismResult
-
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "WCF-HTTP-Activation45 was not enabled."
-            Write-Host "Trying WCF-HTTP-Activation..."
+
+            Write-Host ""
+            Write-Host "WCF-HTTP-Activation45 failed."
+            Write-Host "Trying legacy WCF-HTTP-Activation..."
 
             & dism.exe /online /enable-feature `
               /featurename:WCF-HTTP-Activation `
               /all `
               /norestart
+
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::error::Could not enable WCF HTTP Activation."
+              exit 1
+            }
           }
 
-          Write-Host "WCF activation step completed."
+          Write-Host ""
+          Write-Host "WCF activation completed successfully."
 
 
       # ============================================================
-      # 5. بررسی IIS / ASP.NET / WCF
+      # 5. Verify IIS / ASP.NET / WCF
       # ============================================================
       - name: Verify IIS Components
         shell: powershell
         run: |
-          Write-Host "=== Installed IIS Features ==="
+          Write-Host "=========================================="
+          Write-Host " Verifying IIS Components"
+          Write-Host "=========================================="
+
+          Write-Host ""
+          Write-Host "=== Installed IIS / .NET Features ==="
 
           Get-WindowsFeature |
             Where-Object {
@@ -169,65 +220,152 @@ jobs:
             } |
             Format-Table Name, InstallState
 
+          # --------------------------------------------------------
+          # IIS version
+          # --------------------------------------------------------
+
           Write-Host ""
           Write-Host "=== IIS Version ==="
 
-          & "$env:SystemRoot\System32\inetsrv\appcmd.exe" version
+          $iisPath = "HKLM:\SOFTWARE\Microsoft\InetStp"
 
-          Write-Host ""
-          Write-Host "=== ASP.NET Registration Check ==="
+          if (Test-Path $iisPath) {
 
-          if (Test-Path "$env:windir\Microsoft.NET\Framework64\v4.0.30319\aspnet_regiis.exe") {
-            Write-Host "ASP.NET 4.x detected."
+            $iisInfo = Get-ItemProperty $iisPath
+
+            Write-Host "IIS Major Version : $($iisInfo.MajorVersion)"
+            Write-Host "IIS Minor Version : $($iisInfo.MinorVersion)"
+            Write-Host "IIS Version       : $($iisInfo.VersionString)"
           }
           else {
-            Write-Host "ASP.NET registration executable not found."
+
+            Write-Host "::warning::IIS registry information not found."
           }
+
+          # --------------------------------------------------------
+          # IIS AppCmd
+          # --------------------------------------------------------
+
+          Write-Host ""
+          Write-Host "=== IIS Sites ==="
+
+          $appcmd = "$env:SystemRoot\System32\inetsrv\appcmd.exe"
+
+          if (Test-Path $appcmd) {
+
+            & $appcmd list site
+
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::warning::Could not list IIS sites."
+            }
+          }
+          else {
+
+            Write-Host "::error::appcmd.exe not found."
+            exit 1
+          }
+
+          # --------------------------------------------------------
+          # ASP.NET
+          # --------------------------------------------------------
+
+          Write-Host ""
+          Write-Host "=== ASP.NET Registration ==="
+
+          $aspnetReg = `
+            "$env:windir\Microsoft.NET\Framework64\v4.0.30319\aspnet_regiis.exe"
+
+          if (Test-Path $aspnetReg) {
+
+            Write-Host "ASP.NET 4.x detected."
+            Write-Host "Path: $aspnetReg"
+
+          }
+          else {
+
+            Write-Host "::warning::ASP.NET registration executable not found."
+          }
+
+          # --------------------------------------------------------
+          # WCF
+          # --------------------------------------------------------
+
+          Write-Host ""
+          Write-Host "=== WCF HTTP Activation ==="
+
+          $wcf = Get-WindowsFeature NET-WCF-HTTP-Activation45
+
+          if ($wcf.InstallState -eq "Installed") {
+
+            Write-Host "WCF HTTP Activation: INSTALLED"
+
+          }
+          else {
+
+            Write-Host "::error::WCF HTTP Activation is NOT installed."
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host " IIS verification completed successfully"
+          Write-Host "=========================================="
 
 
       # ============================================================
-      # 6. دانلود Myrtille
+      # 6. Download Myrtille
       # ============================================================
       - name: Download Myrtille
         shell: powershell
         run: |
-          Write-Host "=== Downloading Myrtille ==="
+          Write-Host "=========================================="
+          Write-Host " Downloading Myrtille"
+          Write-Host "=========================================="
 
-          $myrtilleUrl = "https://downloads.hostingcontroller.com/misc/utilities/Myrtille_2.9.2_x86_x64_Setup.msi"
+          $myrtilleUrl = `
+            "https://downloads.hostingcontroller.com/misc/utilities/Myrtille_2.9.2_x86_x64_Setup.msi"
+
+          $myrtilleMsi = `
+            "$env:RUNNER_TEMP\MyrtilleSetup.msi"
 
           Invoke-WebRequest `
             -Uri $myrtilleUrl `
-            -OutFile "$env:RUNNER_TEMP\MyrtilleSetup.msi" `
+            -OutFile $myrtilleMsi `
             -UseBasicParsing
 
-          if (!(Test-Path "$env:RUNNER_TEMP\MyrtilleSetup.msi")) {
+          if (!(Test-Path $myrtilleMsi)) {
+
             Write-Host "::error::Myrtille MSI download failed."
             exit 1
           }
 
-          $size = (Get-Item "$env:RUNNER_TEMP\MyrtilleSetup.msi").Length
+          $size = `
+            (Get-Item $myrtilleMsi).Length
 
-          Write-Host "Downloaded Myrtille MSI."
-          Write-Host "Size: $size bytes"
+          Write-Host ""
+          Write-Host "Myrtille downloaded."
+          Write-Host "File size: $size bytes"
 
 
       # ============================================================
-      # 7. نصب Myrtille
+      # 7. Install Myrtille
       # ============================================================
       - name: Install Myrtille
         shell: powershell
         run: |
-          Write-Host "=== Installing Myrtille ==="
+          Write-Host "=========================================="
+          Write-Host " Installing Myrtille"
+          Write-Host "=========================================="
 
           $msi = "$env:RUNNER_TEMP\MyrtilleSetup.msi"
           $log = "$env:RUNNER_TEMP\myrtille-install.log"
 
           $arguments = @(
-            "/i"
-            "`"$msi`""
-            "/quiet"
-            "/norestart"
-            "/l*v"
+            "/i",
+            "`"$msi`"",
+            "/quiet",
+            "/norestart",
+            "/l*v",
             "`"$log`""
           )
 
@@ -237,28 +375,37 @@ jobs:
             -Wait `
             -PassThru
 
+          Write-Host ""
           Write-Host "MSI Exit Code: $($process.ExitCode)"
 
           if ($process.ExitCode -ne 0) {
+
             Write-Host "::error::Myrtille installation failed."
 
             if (Test-Path $log) {
-              Get-Content $log -Tail 100
+
+              Write-Host ""
+              Write-Host "=== Myrtille installer log ==="
+
+              Get-Content $log -Tail 150
             }
 
             exit 1
           }
 
-          Write-Host "Myrtille MSI installed."
+          Write-Host ""
+          Write-Host "Myrtille installed successfully."
 
 
       # ============================================================
-      # 8. پیدا کردن نصب Myrtille
+      # 8. Locate Myrtille
       # ============================================================
       - name: Locate Myrtille
         shell: powershell
         run: |
-          Write-Host "=== Searching for Myrtille installation ==="
+          Write-Host "=========================================="
+          Write-Host " Locating Myrtille"
+          Write-Host "=========================================="
 
           $paths = @(
             "C:\Program Files\Myrtille",
@@ -270,21 +417,27 @@ jobs:
           $found = $false
 
           foreach ($path in $paths) {
+
             if (Test-Path $path) {
-              Write-Host "Found: $path"
+
+              Write-Host "Found Myrtille:"
+              Write-Host $path
 
               "MYRTILLE_PATH=$path" |
                 Out-File -FilePath $env:GITHUB_ENV -Append
 
               $found = $true
+
+              break
             }
           }
 
           if (!$found) {
+
             Write-Host "::error::Myrtille installation directory was not found."
 
             Write-Host ""
-            Write-Host "Searching entire Program Files..."
+            Write-Host "Searching Program Files..."
 
             Get-ChildItem `
               -Path "C:\Program Files","C:\Program Files (x86)" `
@@ -302,15 +455,22 @@ jobs:
 
 
       # ============================================================
-      # 9. راه‌اندازی IIS
+      # 9. Start IIS
       # ============================================================
       - name: Start and Configure IIS
         shell: powershell
         run: |
-          Write-Host "=== Starting IIS ==="
+          Write-Host "=========================================="
+          Write-Host " Starting IIS"
+          Write-Host "=========================================="
 
-          Set-Service W3SVC -StartupType Automatic
-          Start-Service W3SVC -ErrorAction SilentlyContinue
+          Set-Service `
+            -Name W3SVC `
+            -StartupType Automatic
+
+          Start-Service `
+            -Name W3SVC `
+            -ErrorAction SilentlyContinue
 
           Start-Sleep -Seconds 10
 
@@ -336,14 +496,21 @@ jobs:
 
           Start-Sleep -Seconds 10
 
+          Write-Host "IIS started successfully."
+
 
       # ============================================================
-      # 10. پیدا کردن URL صحیح Myrtille
+      # 10. Detect Myrtille
       # ============================================================
       - name: Detect Myrtille IIS Application
         shell: powershell
         run: |
-          Write-Host "=== Detecting Myrtille IIS configuration ==="
+          Write-Host "=========================================="
+          Write-Host " Detecting Myrtille IIS Application"
+          Write-Host "=========================================="
+
+          Write-Host ""
+          Write-Host "=== IIS Applications ==="
 
           & "$env:SystemRoot\System32\inetsrv\appcmd.exe" list app
 
@@ -353,73 +520,113 @@ jobs:
           & "$env:SystemRoot\System32\inetsrv\appcmd.exe" list site
 
           Write-Host ""
-          Write-Host "Testing common Myrtille URLs..."
+          Write-Host "Testing Myrtille..."
 
           $urls = @(
             "http://localhost/Myrtille",
-            "http://localhost/myrtille",
-            "http://localhost/"
+            "http://localhost/myrtille"
           )
 
+          $found = $false
+
           foreach ($url in $urls) {
+
+            Write-Host ""
+            Write-Host "Testing: $url"
+
             try {
+
               $response = Invoke-WebRequest `
                 -Uri $url `
                 -UseBasicParsing `
-                -TimeoutSec 15 `
+                -TimeoutSec 20 `
                 -ErrorAction Stop
 
-              Write-Host "SUCCESS: $url -> HTTP $($response.StatusCode)"
+              Write-Host "HTTP Status: $($response.StatusCode)"
 
-              if ($url -match "/Myrtille") {
+              if ($response.StatusCode -ge 200 -and
+                  $response.StatusCode -lt 500) {
+
                 "MYRTILLE_URL=$url" |
                   Out-File -FilePath $env:GITHUB_ENV -Append
+
+                $found = $true
+
+                Write-Host "Myrtille endpoint detected."
+                break
               }
             }
             catch {
-              Write-Host "FAILED: $url"
+
+              Write-Host "Request failed:"
               Write-Host $_.Exception.Message
             }
           }
 
+          if (!$found) {
+
+            Write-Host "::warning::Myrtille endpoint was not detected yet."
+            Write-Host "Continuing because IIS may still be configuring the application."
+          }
+
 
       # ============================================================
-      # 11. دانلود Cloudflare Tunnel
+      # 11. Download Cloudflared
       # ============================================================
       - name: Download Cloudflare Tunnel
         shell: powershell
         run: |
-          Write-Host "=== Downloading cloudflared ==="
+          Write-Host "=========================================="
+          Write-Host " Downloading Cloudflare Tunnel"
+          Write-Host "=========================================="
 
-          $url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+          $url = `
+            "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+
+          $cloudflared = `
+            "$env:RUNNER_TEMP\cloudflared.exe"
 
           Invoke-WebRequest `
             -Uri $url `
-            -OutFile "$env:RUNNER_TEMP\cloudflared.exe" `
+            -OutFile $cloudflared `
             -UseBasicParsing
 
-          if (!(Test-Path "$env:RUNNER_TEMP\cloudflared.exe")) {
+          if (!(Test-Path $cloudflared)) {
+
             Write-Host "::error::cloudflared download failed."
             exit 1
           }
 
-          & "$env:RUNNER_TEMP\cloudflared.exe" --version
+          Write-Host ""
+          Write-Host "cloudflared version:"
+
+          & $cloudflared --version
 
 
       # ============================================================
-      # 12. اجرای Cloudflare Quick Tunnel
+      # 12. Start Cloudflare Quick Tunnel
       # ============================================================
       - name: Start Cloudflare Quick Tunnel
         shell: powershell
         run: |
-          Write-Host "=== Starting Cloudflare Quick Tunnel ==="
+          Write-Host "=========================================="
+          Write-Host " Starting Cloudflare Quick Tunnel"
+          Write-Host "=========================================="
 
-          $cloudflared = "$env:RUNNER_TEMP\cloudflared.exe"
+          $cloudflared = `
+            "$env:RUNNER_TEMP\cloudflared.exe"
 
-          $errLog = "$env:RUNNER_TEMP\cf-err.log"
-          $outLog = "$env:RUNNER_TEMP\cf-out.log"
+          $errLog = `
+            "$env:RUNNER_TEMP\cf-err.log"
 
-          Remove-Item $errLog, $outLog -Force -ErrorAction SilentlyContinue
+          $outLog = `
+            "$env:RUNNER_TEMP\cf-out.log"
+
+          Remove-Item `
+            $errLog,
+            $outLog `
+            -Force `
+            -ErrorAction SilentlyContinue
 
           Start-Process `
             -FilePath $cloudflared `
@@ -435,6 +642,7 @@ jobs:
 
           $cfURL = $null
 
+          Write-Host ""
           Write-Host "Waiting for Cloudflare URL..."
 
           for ($i = 1; $i -le 60; $i++) {
@@ -443,54 +651,72 @@ jobs:
 
             if (Test-Path $errLog) {
 
-              $content = Get-Content $errLog -Raw -ErrorAction SilentlyContinue
+              $content = `
+                Get-Content $errLog `
+                -Raw `
+                -ErrorAction SilentlyContinue
 
-              if ($content -match 'https://[a-zA-Z0-9\-]+\.trycloudflare\.com') {
+              if ($content -match `
+                'https://[a-zA-Z0-9\-]+\.trycloudflare\.com') {
 
                 $cfURL = $matches[0]
+
                 break
               }
             }
 
-            Write-Host "Waiting... ($i/60)"
+            Write-Host "Waiting... $i/60"
           }
 
           if (!$cfURL) {
 
-            Write-Host "::error::Cloudflare Tunnel URL was not found."
+            Write-Host "::error::Cloudflare URL was not found."
 
             if (Test-Path $errLog) {
-              Write-Host "=== cloudflared stderr ==="
+
+              Write-Host ""
+              Write-Host "=== Cloudflare stderr ==="
+
               Get-Content $errLog -Tail 100
             }
 
             if (Test-Path $outLog) {
-              Write-Host "=== cloudflared stdout ==="
+
+              Write-Host ""
+              Write-Host "=== Cloudflare stdout ==="
+
               Get-Content $outLog -Tail 100
             }
 
             exit 1
           }
 
-          Write-Host ""
-          Write-Host "Cloudflare URL:"
-          Write-Host $cfURL
-
           "CF_URL=$cfURL" |
             Out-File -FilePath $env:GITHUB_ENV -Append
 
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host " Cloudflare Tunnel Ready"
+          Write-Host "=========================================="
+          Write-Host ""
+          Write-Host $cfURL
+
 
       # ============================================================
-      # 13. تست Cloudflare Tunnel
+      # 13. Test Cloudflare
       # ============================================================
       - name: Test Cloudflare Tunnel
         shell: powershell
         run: |
-          Write-Host "=== Testing Cloudflare Tunnel ==="
+          Write-Host "=========================================="
+          Write-Host " Testing Cloudflare Tunnel"
+          Write-Host "=========================================="
 
           Start-Sleep -Seconds 10
 
-          Write-Host "CF_URL = $env:CF_URL"
+          Write-Host ""
+          Write-Host "Cloudflare URL:"
+          Write-Host $env:CF_URL
 
           try {
 
@@ -500,18 +726,21 @@ jobs:
               -TimeoutSec 30 `
               -ErrorAction Stop
 
-            Write-Host "Cloudflare HTTP Status: $($response.StatusCode)"
+            Write-Host ""
+            Write-Host "HTTP Status: $($response.StatusCode)"
 
           }
           catch {
 
-            Write-Host "::warning::Cloudflare tunnel test failed:"
+            Write-Host ""
+            Write-Host "::warning::Cloudflare HTTP test failed."
+
             Write-Host $_.Exception.Message
           }
 
 
       # ============================================================
-      # 14. نمایش اطلاعات اتصال
+      # 14. Display connection information
       # ============================================================
       - name: Display Connection Details
         shell: powershell
@@ -522,12 +751,12 @@ jobs:
           Write-Host "================================================="
           Write-Host ""
 
-          Write-Host "Cloudflare:"
+          Write-Host "Cloudflare URL:"
           Write-Host "$env:CF_URL"
 
           Write-Host ""
 
-          Write-Host "Myrtille:"
+          Write-Host "Myrtille URL:"
           Write-Host "$env:CF_URL/Myrtille"
 
           Write-Host ""
@@ -549,35 +778,56 @@ jobs:
           Write-Host "================================================="
           Write-Host ""
 
-          Write-Host "Important: Keep this GitHub Actions job running."
+          Write-Host "The runner will remain active."
 
 
       # ============================================================
-      # 15. Keep Runner Alive
+      # 15. Keep GitHub Runner Alive
       # ============================================================
       - name: Keep Session Alive
         shell: powershell
         run: |
-          Write-Host "=== Session is active ==="
+          Write-Host "=========================================="
+          Write-Host " RDP SESSION ACTIVE"
+          Write-Host "=========================================="
 
           while ($true) {
 
-            $time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            $time = `
+              Get-Date `
+              -Format "yyyy-MM-dd HH:mm:ss"
 
-            Write-Host "[$time] RDP session alive..."
+            Write-Host ""
+            Write-Host "[$time] Session alive..."
 
             # Check IIS
-            $iis = Get-Service W3SVC -ErrorAction SilentlyContinue
+            $iis = `
+              Get-Service W3SVC `
+              -ErrorAction SilentlyContinue
 
             if ($iis) {
-              Write-Host "IIS: $($iis.Status)"
+              Write-Host "IIS      : $($iis.Status)"
             }
 
             # Check RDP
-            $rdp = Get-Service TermService -ErrorAction SilentlyContinue
+            $rdp = `
+              Get-Service TermService `
+              -ErrorAction SilentlyContinue
 
             if ($rdp) {
-              Write-Host "RDP: $($rdp.Status)"
+              Write-Host "RDP      : $($rdp.Status)"
+            }
+
+            # Check Cloudflare
+            $cf = `
+              Get-Process cloudflared `
+              -ErrorAction SilentlyContinue
+
+            if ($cf) {
+              Write-Host "Cloudflare: RUNNING"
+            }
+            else {
+              Write-Host "Cloudflare: NOT RUNNING"
             }
 
             Start-Sleep -Seconds 300
