@@ -1,14 +1,15 @@
-name: Pure RDP via Tailscale + Guacamole Web
+name: Browser RDP via Myrtille
 
 on:
   workflow_dispatch:
 
 jobs:
-  rdp-session:
+  browser-rdp:
     runs-on: windows-latest
     timeout-minutes: 360
 
     steps:
+      # 1. تنظیمات RDP و ساخت کاربر
       - name: Configure RDP Service & User
         shell: powershell
         run: |
@@ -19,129 +20,91 @@ jobs:
           echo "RDP_USER=runneradmin" >> $env:GITHUB_ENV
           echo "RDP_PASS=$runnerAdminPass" >> $env:GITHUB_ENV
 
-      # ---------- Tailscale (اختیاری) ----------
-      - name: Install and Connect Tailscale
+      # 2. نصب IIS و پیش‌نیازهای Myrtille
+      - name: Install IIS and .NET Prerequisites
         shell: powershell
         run: |
-          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile "tailscale-setup.exe"
-          Start-Process -FilePath ".\tailscale-setup.exe" -ArgumentList "/S" -Wait
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-runner-$env:GITHUB_RUN_ID
-          $tsIP = $null
-          for ($i=1; $i -le 15; $i++){
-            $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-            if($tsIP){break}
-            Start-Sleep 4
+          # نصب IIS و ویژگی‌های لازم
+          Install-WindowsFeature -Name Web-Server -IncludeManagementTools
+          Install-WindowsFeature -Name Web-Asp-Net45
+          Install-WindowsFeature -Name Web-WCFServices
+          Install-WindowsFeature -Name Web-Windows-Auth
+          Install-WindowsFeature -Name Web-Metabase
+          Write-Host "IIS installed successfully"
+
+      # 3. دانلود و نصب Myrtille
+      - name: Download and Install Myrtille
+        shell: powershell
+        run: |
+          # دانلود آخرین نسخه Myrtille (MSI)
+          $myrtilleUrl = "https://github.com/cedrozor/myrtille/releases/download/v2.9.2/MyrtilleSetup.msi"
+          Invoke-WebRequest -Uri $myrtilleUrl -OutFile "MyrtilleSetup.msi" -UseBasicParsing
+
+          # نصب سایلنت Myrtille
+          Start-Process msiexec.exe -ArgumentList "/i MyrtilleSetup.msi /quiet /norestart /l*vx install.log" -Wait
+
+          # بررسی نصب
+          if (Test-Path "C:\Program Files\Myrtille") {
+            Write-Host "Myrtille installed successfully"
+          } else {
+            Write-Host "::error::Myrtille installation failed"
+            Get-Content install.log -Tail 50
+            exit 1
           }
-          if ($tsIP) { echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV }
 
-      # ---------- نصب Docker ----------
-      - name: Install Docker Desktop
+      # 4. راه‌اندازی IIS و تنظیم Application Pool
+      - name: Start IIS and Configure Myrtille
         shell: powershell
         run: |
-          Invoke-WebRequest -Uri "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe" -OutFile "docker-installer.exe"
-          Start-Process -FilePath ".\docker-installer.exe" -ArgumentList "install --quiet --accept-license --backend=wsl-2" -Wait
-          # ری‌استارت سرویس Docker
-          Start-Service docker
+          # اطمینان از اجرا بودن IIS
+          Start-Service W3SVC
           Start-Sleep 10
-          docker --version
 
-      # ---------- راه‌اندازی Guacamole ----------
-      - name: Deploy Apache Guacamole Stack
+          # تنظیم Application Pool به حالت Classic
+          & "$env:SystemRoot\system32\inetsrv\appcmd.exe" set app "Default Web Site/" /applicationPool:"Classic .NET AppPool"
+          & "$env:SystemRoot\system32\inetsrv\appcmd.exe" set apppool "MyrtilleAppPool" /managedPipelineMode:Classic
+          & "$env:SystemRoot\system32\inetsrv\appcmd.exe" set apppool "MyrtilleAppPool" /managedRuntimeVersion:v4.0
+
+          # ری‌استارت IIS
+          iisreset
+          Write-Host "IIS configured for Myrtille"
+
+      # 5. تست دسترسی محلی به Myrtille
+      - name: Test Myrtille Locally
         shell: powershell
         run: |
-          # پوشه پروژه
-          New-Item -ItemType Directory -Path "$env:USERPROFILE\guac" -Force
-          Set-Location "$env:USERPROFILE\guac"
+          Start-Sleep 10
+          try {
+            $response = Invoke-WebRequest -Uri "http://localhost/Myrtille" -UseBasicParsing -TimeoutSec 30
+            if ($response.StatusCode -eq 200) {
+              Write-Host "Myrtille is accessible locally at http://localhost/Myrtille"
+            } else {
+              Write-Host "::warning::Myrtille returned status: $($response.StatusCode)"
+            }
+          } catch {
+            Write-Host "::warning::Could not reach Myrtille locally: $_"
+          }
 
-          # --- docker-compose.yml ---
-          @"
-          version: "3.8"
-          services:
-            guacd:
-              image: guacamole/guacd:latest
-              container_name: guacd
-              restart: unless-stopped
-              volumes:
-                - guacd-drive:/drive
-                - guacd-record:/record
-              networks:
-                - guac-net
-
-            postgres:
-              image: postgres:15-alpine
-              container_name: guac-postgres
-              restart: unless-stopped
-              environment:
-                POSTGRES_DB: guacamole_db
-                POSTGRES_USER: guacamole
-                POSTGRES_PASSWORD: guac_db_password
-              volumes:
-                - postgres-data:/var/lib/postgresql/data
-                - ./initdb.sql:/docker-entrypoint-initdb.d/initdb.sql:ro
-              healthcheck:
-                test: ["CMD-SHELL", "pg_isready -U guacamole"]
-                interval: 10s
-                timeout: 5s
-                retries: 5
-              networks:
-                - guac-net
-
-            guacamole:
-              image: guacamole/guacamole:latest
-              container_name: guacamole-web
-              restart: unless-stopped
-              ports:
-                - "8080:8080"
-              environment:
-                GUACD_HOSTNAME: guacd
-                GUACD_PORT: 4822
-                POSTGRESQL_HOSTNAME: postgres
-                POSTGRESQL_DATABASE: guacamole_db
-                POSTGRESQL_USER: guacamole
-                POSTGRESQL_PASSWORD: guac_db_password
-              depends_on:
-                postgres:
-                  condition: service_healthy
-                guacd:
-                  condition: service_started
-              networks:
-                - guac-net
-
-          volumes:
-            postgres-data:
-            guacd-drive:
-            guacd-record:
-
-          networks:
-            guac-net:
-              driver: bridge
-          "@ | Out-File -Encoding utf8 docker-compose.yml
-
-          # --- initdb.sql ---
-          docker run --rm guacamole/guacamole:latest /opt/guacamole/bin/initdb.sh --postgresql > initdb.sql
-
-          # --- بالا آوردن استک ---
-          docker compose up -d
-          Start-Sleep 30
-
-      # ---------- Cloudflare Quick Tunnel برای Guacamole ----------
-      - name: Setup Cloudflare Quick Tunnel for Guacamole
+      # 6. ایجاد تونل Cloudflare برای Myrtille
+      - name: Setup Cloudflare Quick Tunnel
         shell: powershell
         run: |
+          # دانلود cloudflared
           Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
 
           $errLog = "$env:TEMP\cf-err.log"
           $outLog = "$env:TEMP\cf-out.log"
 
-          # تونل به پورت 8080 (Guacamole Web)
+          # اجرای تونل به پورت 80 (IIS)
           Start-Process -FilePath ".\cloudflared.exe" `
-            -ArgumentList "tunnel","--url","http://localhost:8080","--no-autoupdate" `
+            -ArgumentList "tunnel","--url","http://localhost:80","--no-autoupdate" `
             -RedirectStandardError $errLog `
             -RedirectStandardOutput $outLog `
             -NoNewWindow
 
+          # استخراج URL تونل
           $cfURL = $null
-          for ($i=1; $i -le 30; $i++) {
+          for ($i=1; $i -le 40; $i++) {
             Start-Sleep 3
             if (Test-Path $errLog) {
               $content = Get-Content $errLog -Raw -ErrorAction SilentlyContinue
@@ -154,70 +117,33 @@ jobs:
 
           if ($cfURL) {
             echo "CF_URL=$cfURL" >> $env:GITHUB_ENV
+            Write-Host "Cloudflare Tunnel URL: $cfURL"
           } else {
-            Write-Host "::warning::Cloudflare URL not found"
+            Write-Host "::error::Could not get Cloudflare URL"
+            if (Test-Path $errLog) { Get-Content $errLog -Tail 30 }
+            exit 1
           }
 
-      # ---------- ساخت اتصال RDP در Guacamole ----------
-      - name: Create RDP Connection in Guacamole
-        shell: powershell
-        run: |
-          Start-Sleep 20
-
-          $auth = Invoke-RestMethod -Uri "http://localhost:8080/guacamole/api/tokens" `
-            -Method Post `
-            -Body "username=guacadmin&password=guacadmin" `
-            -ContentType "application/x-www-form-urlencoded"
-
-          $token = $auth.authToken
-          $dataSource = $auth.dataSource
-
-          $body = @{
-            parentIdentifier = "ROOT"
-            name = "Windows RDP"
-            protocol = "rdp"
-            parameters = @{
-              hostname = "localhost"
-              port = "3389"
-              username = "${{ env.RDP_USER }}"
-              password = "${{ env.RDP_PASS }}"
-              "ignore-cert" = "true"
-              "resize-method" = "display-update"
-              "enable-wallpaper" = "true"
-            }
-            attributes = @{
-              "guacd-hostname" = "guacd"
-              "guacd-port" = "4822"
-            }
-          } | ConvertTo-Json -Depth 10
-
-          Invoke-RestMethod -Uri "http://localhost:8080/guacamole/api/session/data/$dataSource/connections" `
-            -Method Post `
-            -Headers @{ "Guacamole-Token" = $token } `
-            -Body $body `
-            -ContentType "application/json"
-
-          Write-Host "RDP connection created successfully"
-
-      # ---------- نمایش اطلاعات ----------
+      # 7. نمایش اطلاعات اتصال و نگه داشتن session
       - name: Display Connection Details and Keep Alive
         shell: powershell
         run: |
-          Write-Host "=================== BROWSER RDP READY ==================="
+          Write-Host "================================================="
           Write-Host ""
-          Write-Host "🌐 Open this URL in your browser:"
-          Write-Host "   ${{ env.CF_URL }}"
+          Write-Host "🌐 BROWSER RDP READY!"
           Write-Host ""
-          Write-Host "🔑 Guacamole Login:"
-          Write-Host "   Username: guacadmin"
-          Write-Host "   Password: guacadmin"
+          Write-Host "Open this URL in your browser:"
+          Write-Host "   ${{ env.CF_URL }}/Myrtille"
           Write-Host ""
-          Write-Host "🖥️  After login, click the 'Windows RDP' connection"
+          Write-Host "🔑 RDP Login (inside Myrtille):"
+          Write-Host "   Username : ${{ env.RDP_USER }}"
+          Write-Host "   Password : ${{ env.RDP_PASS }}"
           Write-Host ""
-          Write-Host "=== [Direct RDP - Tailscale] ==="
-          Write-Host "   IP: ${{ env.TAILSCALE_IP }}"
-          Write-Host "   User: ${{ env.RDP_USER }}"
-          Write-Host "   Pass: ${{ env.RDP_PASS }}"
-          Write-Host "=========================================================="
+          Write-Host "   RDP Server: localhost:3389"
+          Write-Host ""
+          Write-Host "================================================="
 
-          while ($true) { Start-Sleep 300 }
+          # حلقه بی‌نهایت برای زنده نگه داشتن runner
+          while ($true) {
+            Start-Sleep 300
+          }
