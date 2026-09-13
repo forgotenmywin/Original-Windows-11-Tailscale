@@ -9,139 +9,576 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      # 1. تنظیمات RDP و ساخت کاربر
+
+      # ============================================================
+      # 1. فعال‌سازی RDP و ساخت/تنظیم کاربر
+      # ============================================================
       - name: Configure RDP Service & User
         shell: powershell
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Write-Host "=== Configuring Remote Desktop ==="
+
+          # Enable RDP
+          Set-ItemProperty `
+            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Name "fDenyTSConnections" `
+            -Value 0 `
+            -Force
+
+          # Allow RDP through Windows Firewall
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+          # Configure RDP service
+          Set-Service -Name TermService -StartupType Automatic
+          Start-Service -Name TermService -ErrorAction SilentlyContinue
+
+          # Runner administrator password
           $runnerAdminPass = "WindowsRDP#2025"
-          net user "runneradmin" $runnerAdminPass
-          echo "RDP_USER=runneradmin" >> $env:GITHUB_ENV
-          echo "RDP_PASS=$runnerAdminPass" >> $env:GITHUB_ENV
 
-      # 2. نصب IIS و پیش‌نیازهای Myrtille (WCF/HTTP Activation)
-      - name: Install IIS and .NET WCF HTTP Activation
+          # Set password
+          net user "runneradmin" "$runnerAdminPass"
+
+          # Make sure account is active
+          net user "runneradmin" /active:yes
+
+          # Store variables for later steps
+          "RDP_USER=runneradmin" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "RDP_PASS=$runnerAdminPass" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+          Write-Host "RDP configuration completed."
+
+
+      # ============================================================
+      # 2. نصب IIS
+      # ============================================================
+      - name: Install IIS
         shell: powershell
         run: |
-          # نصب IIS و ویژگی‌های لازم
-          Install-WindowsFeature -Name Web-Server -IncludeManagementTools
-          Install-WindowsFeature -Name Web-Asp-Net45
-          Install-WindowsFeature -Name Web-WCFServices
-          Install-WindowsFeature -Name Web-Windows-Auth
-          Install-WindowsFeature -Name Web-Metabase
-          Write-Host "IIS and .NET prerequisites installed"
+          Write-Host "=== Installing IIS ==="
 
-      # 3. دانلود و نصب Myrtille (نسخه 2.9.2)
-      - name: Download and Install Myrtille
+          Import-Module ServerManager
+
+          Install-WindowsFeature `
+            -Name Web-Server `
+            -IncludeManagementTools
+
+          # Useful IIS components
+          $features = @(
+            "Web-Common-Http",
+            "Web-Default-Doc",
+            "Web-Static-Content",
+            "Web-Http-Errors",
+            "Web-Http-Logging",
+            "Web-Request-Monitor",
+            "Web-Filtering",
+            "Web-Windows-Auth",
+            "Web-Mgmt-Console"
+          )
+
+          foreach ($feature in $features) {
+            try {
+              Write-Host "Installing $feature ..."
+              Install-WindowsFeature -Name $feature -ErrorAction Stop
+            }
+            catch {
+              Write-Host "Warning: Could not install $feature"
+              Write-Host $_
+            }
+          }
+
+          Write-Host "IIS installation completed."
+
+
+      # ============================================================
+      # 3. نصب ASP.NET 4.5 / .NET Framework IIS integration
+      # ============================================================
+      - name: Install ASP.NET and .NET Framework IIS Components
         shell: powershell
         run: |
-          # دانلود آخرین نسخه پایدار Myrtille
+          Write-Host "=== Installing ASP.NET / .NET IIS Components ==="
+
+          Import-Module ServerManager
+
+          $features = @(
+            "Web-Asp-Net45",
+            "Web-Net-Ext45",
+            "Web-ISAPI-Ext",
+            "Web-ISAPI-Filter"
+          )
+
+          foreach ($feature in $features) {
+            try {
+              Write-Host "Installing $feature ..."
+              Install-WindowsFeature -Name $feature -ErrorAction Stop
+            }
+            catch {
+              Write-Host "Warning: $feature could not be installed."
+              Write-Host $_
+            }
+          }
+
+          Write-Host "ASP.NET components completed."
+
+
+      # ============================================================
+      # 4. فعال کردن WCF HTTP Activation
+      # ============================================================
+      - name: Enable WCF HTTP Activation
+        shell: powershell
+        run: |
+          Write-Host "=== Enabling WCF HTTP Activation ==="
+
+          # Check Windows version
+          Get-CimInstance Win32_OperatingSystem |
+            Select-Object Caption, Version
+
+          # Enable .NET Framework 4 WCF HTTP Activation
+          $dismResult = & dism.exe /online /enable-feature `
+            /featurename:WCF-HTTP-Activation45 `
+            /all `
+            /norestart
+
+          $dismResult
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "WCF-HTTP-Activation45 was not enabled."
+            Write-Host "Trying WCF-HTTP-Activation..."
+
+            & dism.exe /online /enable-feature `
+              /featurename:WCF-HTTP-Activation `
+              /all `
+              /norestart
+          }
+
+          Write-Host "WCF activation step completed."
+
+
+      # ============================================================
+      # 5. بررسی IIS / ASP.NET / WCF
+      # ============================================================
+      - name: Verify IIS Components
+        shell: powershell
+        run: |
+          Write-Host "=== Installed IIS Features ==="
+
+          Get-WindowsFeature |
+            Where-Object {
+              $_.Name -like "Web-*" -or
+              $_.Name -like "*WCF*" -or
+              $_.Name -like "*NET*"
+            } |
+            Format-Table Name, InstallState
+
+          Write-Host ""
+          Write-Host "=== IIS Version ==="
+
+          & "$env:SystemRoot\System32\inetsrv\appcmd.exe" version
+
+          Write-Host ""
+          Write-Host "=== ASP.NET Registration Check ==="
+
+          if (Test-Path "$env:windir\Microsoft.NET\Framework64\v4.0.30319\aspnet_regiis.exe") {
+            Write-Host "ASP.NET 4.x detected."
+          }
+          else {
+            Write-Host "ASP.NET registration executable not found."
+          }
+
+
+      # ============================================================
+      # 6. دانلود Myrtille
+      # ============================================================
+      - name: Download Myrtille
+        shell: powershell
+        run: |
+          Write-Host "=== Downloading Myrtille ==="
+
           $myrtilleUrl = "https://downloads.hostingcontroller.com/misc/utilities/Myrtille_2.9.2_x86_x64_Setup.msi"
-          Invoke-WebRequest -Uri $myrtilleUrl -OutFile "MyrtilleSetup.msi" -UseBasicParsing
 
-          # نصب سایلنت Myrtille
-          Start-Process msiexec.exe -ArgumentList "/i MyrtilleSetup.msi /quiet /norestart /l*vx install.log" -Wait
+          Invoke-WebRequest `
+            -Uri $myrtilleUrl `
+            -OutFile "$env:RUNNER_TEMP\MyrtilleSetup.msi" `
+            -UseBasicParsing
 
-          # بررسی نصب
-          if (Test-Path "C:\Program Files (x86)\Myrtille") {
-            Write-Host "Myrtille installed successfully"
-          } else {
-            Write-Host "::error::Myrtille installation failed"
-            Get-Content install.log -Tail 50
+          if (!(Test-Path "$env:RUNNER_TEMP\MyrtilleSetup.msi")) {
+            Write-Host "::error::Myrtille MSI download failed."
             exit 1
           }
 
-      # 4. راه‌اندازی IIS و تنظیم Application Pool
-      - name: Start IIS and Configure Myrtille
+          $size = (Get-Item "$env:RUNNER_TEMP\MyrtilleSetup.msi").Length
+
+          Write-Host "Downloaded Myrtille MSI."
+          Write-Host "Size: $size bytes"
+
+
+      # ============================================================
+      # 7. نصب Myrtille
+      # ============================================================
+      - name: Install Myrtille
         shell: powershell
         run: |
-          # اطمینان از اجرا بودن IIS
-          Start-Service W3SVC
-          Start-Sleep 15
+          Write-Host "=== Installing Myrtille ==="
 
-          # تنظیم Application Pool Myrtille به حالت Classic
-          & "$env:SystemRoot\system32\inetsrv\appcmd.exe" set apppool "MyrtilleAppPool" /managedPipelineMode:Classic
-          & "$env:SystemRoot\system32\inetsrv\appcmd.exe" set apppool "MyrtilleAppPool" /managedRuntimeVersion:v4.0
+          $msi = "$env:RUNNER_TEMP\MyrtilleSetup.msi"
+          $log = "$env:RUNNER_TEMP\myrtille-install.log"
 
-          # ری‌استارت IIS
-          iisreset
-          Write-Host "IIS configured for Myrtille"
+          $arguments = @(
+            "/i"
+            "`"$msi`""
+            "/quiet"
+            "/norestart"
+            "/l*v"
+            "`"$log`""
+          )
 
-      # 5. تست دسترسی محلی به Myrtille
-      - name: Test Myrtille Locally
-        shell: powershell
-        run: |
-          Start-Sleep 10
-          try {
-            $response = Invoke-WebRequest -Uri "http://localhost/Myrtille" -UseBasicParsing -TimeoutSec 30
-            if ($response.StatusCode -eq 200) {
-              Write-Host "Myrtille is accessible at http://localhost/Myrtille"
-            } else {
-              Write-Host "::warning::Myrtille returned status: $($response.StatusCode)"
+          $process = Start-Process `
+            -FilePath "msiexec.exe" `
+            -ArgumentList $arguments `
+            -Wait `
+            -PassThru
+
+          Write-Host "MSI Exit Code: $($process.ExitCode)"
+
+          if ($process.ExitCode -ne 0) {
+            Write-Host "::error::Myrtille installation failed."
+
+            if (Test-Path $log) {
+              Get-Content $log -Tail 100
             }
-          } catch {
-            Write-Host "::warning::Could not reach Myrtille locally: $_"
+
+            exit 1
           }
 
-      # 6. ایجاد تونل Cloudflare برای Myrtille
-      - name: Setup Cloudflare Quick Tunnel
+          Write-Host "Myrtille MSI installed."
+
+
+      # ============================================================
+      # 8. پیدا کردن نصب Myrtille
+      # ============================================================
+      - name: Locate Myrtille
         shell: powershell
         run: |
-          # دانلود cloudflared
-          Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
+          Write-Host "=== Searching for Myrtille installation ==="
 
-          $errLog = "$env:TEMP\cf-err.log"
-          $outLog = "$env:TEMP\cf-out.log"
+          $paths = @(
+            "C:\Program Files\Myrtille",
+            "C:\Program Files (x86)\Myrtille",
+            "C:\Myrtille",
+            "C:\inetpub\wwwroot\Myrtille"
+          )
 
-          # اجرای تونل به پورت 80 (IIS)
-          Start-Process -FilePath ".\cloudflared.exe" `
-            -ArgumentList "tunnel","--url","http://localhost:80","--no-autoupdate" `
+          $found = $false
+
+          foreach ($path in $paths) {
+            if (Test-Path $path) {
+              Write-Host "Found: $path"
+
+              "MYRTILLE_PATH=$path" |
+                Out-File -FilePath $env:GITHUB_ENV -Append
+
+              $found = $true
+            }
+          }
+
+          if (!$found) {
+            Write-Host "::error::Myrtille installation directory was not found."
+
+            Write-Host ""
+            Write-Host "Searching entire Program Files..."
+
+            Get-ChildItem `
+              -Path "C:\Program Files","C:\Program Files (x86)" `
+              -Directory `
+              -ErrorAction SilentlyContinue |
+              Where-Object {
+                $_.Name -match "Myrtille"
+              } |
+              ForEach-Object {
+                Write-Host $_.FullName
+              }
+
+            exit 1
+          }
+
+
+      # ============================================================
+      # 9. راه‌اندازی IIS
+      # ============================================================
+      - name: Start and Configure IIS
+        shell: powershell
+        run: |
+          Write-Host "=== Starting IIS ==="
+
+          Set-Service W3SVC -StartupType Automatic
+          Start-Service W3SVC -ErrorAction SilentlyContinue
+
+          Start-Sleep -Seconds 10
+
+          Write-Host ""
+          Write-Host "=== IIS Sites ==="
+
+          & "$env:SystemRoot\System32\inetsrv\appcmd.exe" list site
+
+          Write-Host ""
+          Write-Host "=== IIS Application Pools ==="
+
+          & "$env:SystemRoot\System32\inetsrv\appcmd.exe" list apppool
+
+          Write-Host ""
+          Write-Host "=== IIS Applications ==="
+
+          & "$env:SystemRoot\System32\inetsrv\appcmd.exe" list app
+
+          Write-Host ""
+          Write-Host "Restarting IIS..."
+
+          iisreset
+
+          Start-Sleep -Seconds 10
+
+
+      # ============================================================
+      # 10. پیدا کردن URL صحیح Myrtille
+      # ============================================================
+      - name: Detect Myrtille IIS Application
+        shell: powershell
+        run: |
+          Write-Host "=== Detecting Myrtille IIS configuration ==="
+
+          & "$env:SystemRoot\System32\inetsrv\appcmd.exe" list app
+
+          Write-Host ""
+          Write-Host "=== IIS Sites ==="
+
+          & "$env:SystemRoot\System32\inetsrv\appcmd.exe" list site
+
+          Write-Host ""
+          Write-Host "Testing common Myrtille URLs..."
+
+          $urls = @(
+            "http://localhost/Myrtille",
+            "http://localhost/myrtille",
+            "http://localhost/"
+          )
+
+          foreach ($url in $urls) {
+            try {
+              $response = Invoke-WebRequest `
+                -Uri $url `
+                -UseBasicParsing `
+                -TimeoutSec 15 `
+                -ErrorAction Stop
+
+              Write-Host "SUCCESS: $url -> HTTP $($response.StatusCode)"
+
+              if ($url -match "/Myrtille") {
+                "MYRTILLE_URL=$url" |
+                  Out-File -FilePath $env:GITHUB_ENV -Append
+              }
+            }
+            catch {
+              Write-Host "FAILED: $url"
+              Write-Host $_.Exception.Message
+            }
+          }
+
+
+      # ============================================================
+      # 11. دانلود Cloudflare Tunnel
+      # ============================================================
+      - name: Download Cloudflare Tunnel
+        shell: powershell
+        run: |
+          Write-Host "=== Downloading cloudflared ==="
+
+          $url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile "$env:RUNNER_TEMP\cloudflared.exe" `
+            -UseBasicParsing
+
+          if (!(Test-Path "$env:RUNNER_TEMP\cloudflared.exe")) {
+            Write-Host "::error::cloudflared download failed."
+            exit 1
+          }
+
+          & "$env:RUNNER_TEMP\cloudflared.exe" --version
+
+
+      # ============================================================
+      # 12. اجرای Cloudflare Quick Tunnel
+      # ============================================================
+      - name: Start Cloudflare Quick Tunnel
+        shell: powershell
+        run: |
+          Write-Host "=== Starting Cloudflare Quick Tunnel ==="
+
+          $cloudflared = "$env:RUNNER_TEMP\cloudflared.exe"
+
+          $errLog = "$env:RUNNER_TEMP\cf-err.log"
+          $outLog = "$env:RUNNER_TEMP\cf-out.log"
+
+          Remove-Item $errLog, $outLog -Force -ErrorAction SilentlyContinue
+
+          Start-Process `
+            -FilePath $cloudflared `
+            -ArgumentList @(
+              "tunnel",
+              "--url",
+              "http://127.0.0.1:80",
+              "--no-autoupdate"
+            ) `
             -RedirectStandardError $errLog `
             -RedirectStandardOutput $outLog `
-            -NoNewWindow
+            -WindowStyle Hidden
 
-          # استخراج URL تونل
           $cfURL = $null
-          for ($i=1; $i -le 40; $i++) {
-            Start-Sleep 3
+
+          Write-Host "Waiting for Cloudflare URL..."
+
+          for ($i = 1; $i -le 60; $i++) {
+
+            Start-Sleep -Seconds 2
+
             if (Test-Path $errLog) {
+
               $content = Get-Content $errLog -Raw -ErrorAction SilentlyContinue
-              if ($content -match "https://[a-z0-9\-]+\.trycloudflare\.com") {
+
+              if ($content -match 'https://[a-zA-Z0-9\-]+\.trycloudflare\.com') {
+
                 $cfURL = $matches[0]
                 break
               }
             }
+
+            Write-Host "Waiting... ($i/60)"
           }
 
-          if ($cfURL) {
-            echo "CF_URL=$cfURL" >> $env:GITHUB_ENV
-            Write-Host "Cloudflare Tunnel URL: $cfURL"
-          } else {
-            Write-Host "::error::Could not get Cloudflare URL"
-            if (Test-Path $errLog) { Get-Content $errLog -Tail 30 }
+          if (!$cfURL) {
+
+            Write-Host "::error::Cloudflare Tunnel URL was not found."
+
+            if (Test-Path $errLog) {
+              Write-Host "=== cloudflared stderr ==="
+              Get-Content $errLog -Tail 100
+            }
+
+            if (Test-Path $outLog) {
+              Write-Host "=== cloudflared stdout ==="
+              Get-Content $outLog -Tail 100
+            }
+
             exit 1
           }
 
-      # 7. نمایش اطلاعات اتصال و نگه داشتن session
-      - name: Display Connection Details and Keep Alive
+          Write-Host ""
+          Write-Host "Cloudflare URL:"
+          Write-Host $cfURL
+
+          "CF_URL=$cfURL" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
+
+
+      # ============================================================
+      # 13. تست Cloudflare Tunnel
+      # ============================================================
+      - name: Test Cloudflare Tunnel
         shell: powershell
         run: |
-          Write-Host "================================================="
-          Write-Host ""
-          Write-Host "🌐 BROWSER RDP READY!"
-          Write-Host ""
-          Write-Host "Open this URL in your browser:"
-          Write-Host "   ${{ env.CF_URL }}/Myrtille"
-          Write-Host ""
-          Write-Host "🔑 RDP Login (inside Myrtille):"
-          Write-Host "   Server   : localhost"
-          Write-Host "   Username : ${{ env.RDP_USER }}"
-          Write-Host "   Password : ${{ env.RDP_PASS }}"
-          Write-Host ""
-          Write-Host "================================================="
+          Write-Host "=== Testing Cloudflare Tunnel ==="
 
-          # حلقه بی‌نهایت برای زنده نگه داشتن runner
+          Start-Sleep -Seconds 10
+
+          Write-Host "CF_URL = $env:CF_URL"
+
+          try {
+
+            $response = Invoke-WebRequest `
+              -Uri "$env:CF_URL/" `
+              -UseBasicParsing `
+              -TimeoutSec 30 `
+              -ErrorAction Stop
+
+            Write-Host "Cloudflare HTTP Status: $($response.StatusCode)"
+
+          }
+          catch {
+
+            Write-Host "::warning::Cloudflare tunnel test failed:"
+            Write-Host $_.Exception.Message
+          }
+
+
+      # ============================================================
+      # 14. نمایش اطلاعات اتصال
+      # ============================================================
+      - name: Display Connection Details
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "================================================="
+          Write-Host "          BROWSER RDP READY"
+          Write-Host "================================================="
+          Write-Host ""
+
+          Write-Host "Cloudflare:"
+          Write-Host "$env:CF_URL"
+
+          Write-Host ""
+
+          Write-Host "Myrtille:"
+          Write-Host "$env:CF_URL/Myrtille"
+
+          Write-Host ""
+
+          Write-Host "RDP Server:"
+          Write-Host "localhost"
+
+          Write-Host ""
+
+          Write-Host "Username:"
+          Write-Host "$env:RDP_USER"
+
+          Write-Host ""
+
+          Write-Host "Password:"
+          Write-Host "$env:RDP_PASS"
+
+          Write-Host ""
+          Write-Host "================================================="
+          Write-Host ""
+
+          Write-Host "Important: Keep this GitHub Actions job running."
+
+
+      # ============================================================
+      # 15. Keep Runner Alive
+      # ============================================================
+      - name: Keep Session Alive
+        shell: powershell
+        run: |
+          Write-Host "=== Session is active ==="
+
           while ($true) {
-            Start-Sleep 300
+
+            $time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+
+            Write-Host "[$time] RDP session alive..."
+
+            # Check IIS
+            $iis = Get-Service W3SVC -ErrorAction SilentlyContinue
+
+            if ($iis) {
+              Write-Host "IIS: $($iis.Status)"
+            }
+
+            # Check RDP
+            $rdp = Get-Service TermService -ErrorAction SilentlyContinue
+
+            if ($rdp) {
+              Write-Host "RDP: $($rdp.Status)"
+            }
+
+            Start-Sleep -Seconds 300
           }
