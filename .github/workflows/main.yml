@@ -1,121 +1,147 @@
-# ============================================================
-# Install IIS on Windows Server
-# ============================================================
+name: Browser RDP via Myrtille (No Docker)
 
-$ErrorActionPreference = "Stop"
+on:
+  workflow_dispatch:
 
-Write-Host "============================================"
-Write-Host " Installing IIS"
-Write-Host "============================================"
+jobs:
+  browser-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 360
 
-# Check Administrator
-$currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
-$principal = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
+    steps:
+      # 1. تنظیمات RDP و ساخت کاربر
+      - name: Configure RDP Service & User
+        shell: powershell
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          $runnerAdminPass = "WindowsRDP#2025"
+          net user "runneradmin" $runnerAdminPass
+          echo "RDP_USER=runneradmin" >> $env:GITHUB_ENV
+          echo "RDP_PASS=$runnerAdminPass" >> $env:GITHUB_ENV
 
-if (-not $principal.IsInRole(
-    [Security.Principal.WindowsBuiltInRole]::Administrator
-)) {
-    Write-Error "This script must run as Administrator."
-    exit 1
-}
+      # 2. نصب IIS و پیش‌نیازهای Myrtille (WCF/HTTP Activation)
+      - name: Install IIS and .NET WCF HTTP Activation
+        shell: powershell
+        run: |
+          # نصب IIS و ویژگی‌های لازم
+          Install-WindowsFeature -Name Web-Server -IncludeManagementTools
+          Install-WindowsFeature -Name Web-Asp-Net45
+          Install-WindowsFeature -Name Web-WCFServices
+          Install-WindowsFeature -Name Web-Windows-Auth
+          Install-WindowsFeature -Name Web-Metabase
+          Write-Host "IIS and .NET prerequisites installed"
 
-Write-Host ""
-Write-Host "Installing IIS features..."
+      # 3. دانلود و نصب Myrtille (نسخه 2.9.2)
+      - name: Download and Install Myrtille
+        shell: powershell
+        run: |
+          # دانلود آخرین نسخه پایدار Myrtille
+          $myrtilleUrl = "https://downloads.hostingcontroller.com/misc/utilities/Myrtille_2.9.2_x86_x64_Setup.msi"
+          Invoke-WebRequest -Uri $myrtilleUrl -OutFile "MyrtilleSetup.msi" -UseBasicParsing
 
-# Core IIS + common features
-$features = @(
-    "Web-Server",
-    "Web-WebServer",
-    "Web-Common-Http",
-    "Web-Default-Doc",
-    "Web-Dir-Browsing",
-    "Web-Http-Errors",
-    "Web-Static-Content",
-    "Web-Http-Logging",
-    "Web-Request-Monitor",
-    "Web-Http-Tracing",
-    "Web-Performance",
-    "Web-Stat-Compression",
-    "Web-Security",
-    "Web-Filtering",
-    "Web-Mgmt-Tools",
-    "Web-Mgmt-Console"
-)
+          # نصب سایلنت Myrtille
+          Start-Process msiexec.exe -ArgumentList "/i MyrtilleSetup.msi /quiet /norestart /l*vx install.log" -Wait
 
-foreach ($feature in $features) {
+          # بررسی نصب
+          if (Test-Path "C:\Program Files (x86)\Myrtille") {
+            Write-Host "Myrtille installed successfully"
+          } else {
+            Write-Host "::error::Myrtille installation failed"
+            Get-Content install.log -Tail 50
+            exit 1
+          }
 
-    Write-Host "Installing: $feature"
+      # 4. راه‌اندازی IIS و تنظیم Application Pool
+      - name: Start IIS and Configure Myrtille
+        shell: powershell
+        run: |
+          # اطمینان از اجرا بودن IIS
+          Start-Service W3SVC
+          Start-Sleep 15
 
-    try {
-        Install-WindowsFeature `
-            -Name $feature `
-            -IncludeManagementTools `
-            -ErrorAction Stop
+          # تنظیم Application Pool Myrtille به حالت Classic
+          & "$env:SystemRoot\system32\inetsrv\appcmd.exe" set apppool "MyrtilleAppPool" /managedPipelineMode:Classic
+          & "$env:SystemRoot\system32\inetsrv\appcmd.exe" set apppool "MyrtilleAppPool" /managedRuntimeVersion:v4.0
 
-        Write-Host "OK: $feature"
-    }
-    catch {
-        Write-Warning "Could not install $feature"
-        Write-Warning $_.Exception.Message
-    }
-}
+          # ری‌استارت IIS
+          iisreset
+          Write-Host "IIS configured for Myrtille"
 
-Write-Host ""
-Write-Host "============================================"
-Write-Host " IIS installation finished"
-Write-Host "============================================"
+      # 5. تست دسترسی محلی به Myrtille
+      - name: Test Myrtille Locally
+        shell: powershell
+        run: |
+          Start-Sleep 10
+          try {
+            $response = Invoke-WebRequest -Uri "http://localhost/Myrtille" -UseBasicParsing -TimeoutSec 30
+            if ($response.StatusCode -eq 200) {
+              Write-Host "Myrtille is accessible at http://localhost/Myrtille"
+            } else {
+              Write-Host "::warning::Myrtille returned status: $($response.StatusCode)"
+            }
+          } catch {
+            Write-Host "::warning::Could not reach Myrtille locally: $_"
+          }
 
-# Check IIS
-Write-Host ""
-Write-Host "Checking IIS..."
+      # 6. ایجاد تونل Cloudflare برای Myrtille
+      - name: Setup Cloudflare Quick Tunnel
+        shell: powershell
+        run: |
+          # دانلود cloudflared
+          Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
 
-$iis = Get-WindowsFeature -Name Web-Server
+          $errLog = "$env:TEMP\cf-err.log"
+          $outLog = "$env:TEMP\cf-out.log"
 
-if ($iis.Installed) {
-    Write-Host "IIS is installed successfully."
-}
-else {
-    Write-Error "IIS installation failed."
-    exit 1
-}
+          # اجرای تونل به پورت 80 (IIS)
+          Start-Process -FilePath ".\cloudflared.exe" `
+            -ArgumentList "tunnel","--url","http://localhost:80","--no-autoupdate" `
+            -RedirectStandardError $errLog `
+            -RedirectStandardOutput $outLog `
+            -NoNewWindow
 
-# Check IIS service
-Write-Host ""
-Write-Host "Checking W3SVC service..."
+          # استخراج URL تونل
+          $cfURL = $null
+          for ($i=1; $i -le 40; $i++) {
+            Start-Sleep 3
+            if (Test-Path $errLog) {
+              $content = Get-Content $errLog -Raw -ErrorAction SilentlyContinue
+              if ($content -match "https://[a-z0-9\-]+\.trycloudflare\.com") {
+                $cfURL = $matches[0]
+                break
+              }
+            }
+          }
 
-$w3svc = Get-Service -Name W3SVC -ErrorAction SilentlyContinue
+          if ($cfURL) {
+            echo "CF_URL=$cfURL" >> $env:GITHUB_ENV
+            Write-Host "Cloudflare Tunnel URL: $cfURL"
+          } else {
+            Write-Host "::error::Could not get Cloudflare URL"
+            if (Test-Path $errLog) { Get-Content $errLog -Tail 30 }
+            exit 1
+          }
 
-if ($null -ne $w3svc) {
+      # 7. نمایش اطلاعات اتصال و نگه داشتن session
+      - name: Display Connection Details and Keep Alive
+        shell: powershell
+        run: |
+          Write-Host "================================================="
+          Write-Host ""
+          Write-Host "🌐 BROWSER RDP READY!"
+          Write-Host ""
+          Write-Host "Open this URL in your browser:"
+          Write-Host "   ${{ env.CF_URL }}/Myrtille"
+          Write-Host ""
+          Write-Host "🔑 RDP Login (inside Myrtille):"
+          Write-Host "   Server   : localhost"
+          Write-Host "   Username : ${{ env.RDP_USER }}"
+          Write-Host "   Password : ${{ env.RDP_PASS }}"
+          Write-Host ""
+          Write-Host "================================================="
 
-    if ($w3svc.Status -ne "Running") {
-        Start-Service W3SVC
-    }
-
-    Write-Host "W3SVC status: $((Get-Service W3SVC).Status)"
-}
-else {
-    Write-Warning "W3SVC service was not found."
-}
-
-# Test localhost
-Write-Host ""
-Write-Host "Testing IIS..."
-
-try {
-    $response = Invoke-WebRequest `
-        -Uri "http://localhost" `
-        -UseBasicParsing `
-        -TimeoutSec 10
-
-    Write-Host "IIS HTTP test: SUCCESS"
-    Write-Host "HTTP Status: $($response.StatusCode)"
-}
-catch {
-    Write-Warning "IIS HTTP test failed:"
-    Write-Warning $_.Exception.Message
-}
-
-Write-Host ""
-Write-Host "============================================"
-Write-Host " DONE"
-Write-Host "============================================"
+          # حلقه بی‌نهایت برای زنده نگه داشتن runner
+          while ($true) {
+            Start-Sleep 300
+          }
