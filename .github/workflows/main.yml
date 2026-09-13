@@ -27,7 +27,7 @@ jobs:
             -Value 0 `
             -Force
 
-          # Enable RDP firewall rules
+          # Enable firewall
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
           # Start RDP service
@@ -39,24 +39,20 @@ jobs:
             -Name "TermService" `
             -ErrorAction SilentlyContinue
 
-          # RDP credentials
+          # RDP account
           $runnerAdminPass = "WindowsRDP#2025"
 
-          # Set password
           net user runneradmin "$runnerAdminPass"
-
-          # Make sure account is enabled
           net user runneradmin /active:yes
 
-          # Save variables
+          # Store environment variables
           "RDP_USER=runneradmin" |
             Out-File -FilePath $env:GITHUB_ENV -Append
 
           "RDP_PASS=$runnerAdminPass" |
             Out-File -FilePath $env:GITHUB_ENV -Append
 
-          Write-Host ""
-          Write-Host "RDP configuration completed."
+          Write-Host "RDP configured successfully."
 
 
       # ============================================================
@@ -71,12 +67,10 @@ jobs:
 
           Import-Module ServerManager
 
-          # Main IIS role
           Install-WindowsFeature `
             -Name Web-Server `
             -IncludeManagementTools
 
-          # IIS components
           $features = @(
             "Web-Common-Http",
             "Web-Default-Doc",
@@ -113,7 +107,7 @@ jobs:
 
 
       # ============================================================
-      # 3. ASP.NET / .NET Framework IIS components
+      # 3. ASP.NET / .NET Framework
       # ============================================================
       - name: Install ASP.NET and .NET IIS Components
         shell: powershell
@@ -182,7 +176,7 @@ jobs:
 
             Write-Host ""
             Write-Host "WCF-HTTP-Activation45 failed."
-            Write-Host "Trying legacy WCF-HTTP-Activation..."
+            Write-Host "Trying WCF-HTTP-Activation..."
 
             & dism.exe /online /enable-feature `
               /featurename:WCF-HTTP-Activation `
@@ -196,7 +190,7 @@ jobs:
           }
 
           Write-Host ""
-          Write-Host "WCF activation completed successfully."
+          Write-Host "WCF activation completed."
 
 
       # ============================================================
@@ -210,7 +204,7 @@ jobs:
           Write-Host "=========================================="
 
           Write-Host ""
-          Write-Host "=== Installed IIS / .NET Features ==="
+          Write-Host "=== IIS / .NET Features ==="
 
           Get-WindowsFeature |
             Where-Object {
@@ -236,6 +230,7 @@ jobs:
             Write-Host "IIS Major Version : $($iisInfo.MajorVersion)"
             Write-Host "IIS Minor Version : $($iisInfo.MinorVersion)"
             Write-Host "IIS Version       : $($iisInfo.VersionString)"
+
           }
           else {
 
@@ -243,7 +238,7 @@ jobs:
           }
 
           # --------------------------------------------------------
-          # IIS AppCmd
+          # AppCmd
           # --------------------------------------------------------
 
           Write-Host ""
@@ -251,26 +246,20 @@ jobs:
 
           $appcmd = "$env:SystemRoot\System32\inetsrv\appcmd.exe"
 
-          if (Test-Path $appcmd) {
-
-            & $appcmd list site
-
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "::warning::Could not list IIS sites."
-            }
-          }
-          else {
+          if (!(Test-Path $appcmd)) {
 
             Write-Host "::error::appcmd.exe not found."
             exit 1
           }
+
+          & $appcmd list site
 
           # --------------------------------------------------------
           # ASP.NET
           # --------------------------------------------------------
 
           Write-Host ""
-          Write-Host "=== ASP.NET Registration ==="
+          Write-Host "=== ASP.NET ==="
 
           $aspnetReg = `
             "$env:windir\Microsoft.NET\Framework64\v4.0.30319\aspnet_regiis.exe"
@@ -307,9 +296,7 @@ jobs:
           }
 
           Write-Host ""
-          Write-Host "=========================================="
-          Write-Host " IIS verification completed successfully"
-          Write-Host "=========================================="
+          Write-Host "Verification completed successfully."
 
 
       # ============================================================
@@ -339,12 +326,8 @@ jobs:
             exit 1
           }
 
-          $size = `
-            (Get-Item $myrtilleMsi).Length
-
           Write-Host ""
           Write-Host "Myrtille downloaded."
-          Write-Host "File size: $size bytes"
 
 
       # ============================================================
@@ -383,17 +366,12 @@ jobs:
             Write-Host "::error::Myrtille installation failed."
 
             if (Test-Path $log) {
-
-              Write-Host ""
-              Write-Host "=== Myrtille installer log ==="
-
               Get-Content $log -Tail 150
             }
 
             exit 1
           }
 
-          Write-Host ""
           Write-Host "Myrtille installed successfully."
 
 
@@ -420,24 +398,23 @@ jobs:
 
             if (Test-Path $path) {
 
-              Write-Host "Found Myrtille:"
+              Write-Host "Found:"
               Write-Host $path
 
               "MYRTILLE_PATH=$path" |
                 Out-File -FilePath $env:GITHUB_ENV -Append
 
               $found = $true
-
               break
             }
           }
 
           if (!$found) {
 
-            Write-Host "::error::Myrtille installation directory was not found."
+            Write-Host "::error::Myrtille installation directory not found."
 
             Write-Host ""
-            Write-Host "Searching Program Files..."
+            Write-Host "Searching..."
 
             Get-ChildItem `
               -Path "C:\Program Files","C:\Program Files (x86)" `
@@ -455,7 +432,7 @@ jobs:
 
 
       # ============================================================
-      # 9. Start IIS
+      # 9. Start / Configure IIS
       # ============================================================
       - name: Start and Configure IIS
         shell: powershell
@@ -496,7 +473,7 @@ jobs:
 
           Start-Sleep -Seconds 10
 
-          Write-Host "IIS started successfully."
+          Write-Host "IIS started."
 
 
       # ============================================================
@@ -506,7 +483,7 @@ jobs:
         shell: powershell
         run: |
           Write-Host "=========================================="
-          Write-Host " Detecting Myrtille IIS Application"
+          Write-Host " Detecting Myrtille"
           Write-Host "=========================================="
 
           Write-Host ""
@@ -520,9 +497,11 @@ jobs:
           & "$env:SystemRoot\System32\inetsrv\appcmd.exe" list site
 
           Write-Host ""
-          Write-Host "Testing Myrtille..."
+          Write-Host "Testing Myrtille URLs..."
 
           $urls = @(
+            "http://127.0.0.1/Myrtille",
+            "http://127.0.0.1/myrtille",
             "http://localhost/Myrtille",
             "http://localhost/myrtille"
           )
@@ -555,6 +534,7 @@ jobs:
                 Write-Host "Myrtille endpoint detected."
                 break
               }
+
             }
             catch {
 
@@ -565,13 +545,15 @@ jobs:
 
           if (!$found) {
 
-            Write-Host "::warning::Myrtille endpoint was not detected yet."
-            Write-Host "Continuing because IIS may still be configuring the application."
+            Write-Host "::warning::Myrtille endpoint was not detected."
+
+            Write-Host ""
+            Write-Host "Continuing to Cloudflare..."
           }
 
 
       # ============================================================
-      # 11. Download Cloudflared
+      # 11. Download cloudflared
       # ============================================================
       - name: Download Cloudflare Tunnel
         shell: powershell
@@ -613,14 +595,10 @@ jobs:
           Write-Host " Starting Cloudflare Quick Tunnel"
           Write-Host "=========================================="
 
-          $cloudflared = `
-            "$env:RUNNER_TEMP\cloudflared.exe"
+          $cloudflared = "$env:RUNNER_TEMP\cloudflared.exe"
 
-          $errLog = `
-            "$env:RUNNER_TEMP\cf-err.log"
-
-          $outLog = `
-            "$env:RUNNER_TEMP\cf-out.log"
+          $errLog = "$env:RUNNER_TEMP\cf-err.log"
+          $outLog = "$env:RUNNER_TEMP\cf-out.log"
 
           Remove-Item `
             $errLog,
@@ -628,7 +606,7 @@ jobs:
             -Force `
             -ErrorAction SilentlyContinue
 
-          Start-Process `
+          $process = Start-Process `
             -FilePath $cloudflared `
             -ArgumentList @(
               "tunnel",
@@ -638,7 +616,14 @@ jobs:
             ) `
             -RedirectStandardError $errLog `
             -RedirectStandardOutput $outLog `
+            -PassThru `
             -WindowStyle Hidden
+
+          Write-Host ""
+          Write-Host "cloudflared PID: $($process.Id)"
+
+          "CF_PID=$($process.Id)" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
 
           $cfURL = $null
 
@@ -648,6 +633,23 @@ jobs:
           for ($i = 1; $i -le 60; $i++) {
 
             Start-Sleep -Seconds 2
+
+            if ($process.HasExited) {
+
+              Write-Host "::error::cloudflared exited."
+
+              Write-Host "Exit code: $($process.ExitCode)"
+
+              if (Test-Path $errLog) {
+
+                Write-Host ""
+                Write-Host "=== Cloudflare Error ==="
+
+                Get-Content $errLog -Tail 100
+              }
+
+              exit 1
+            }
 
             if (Test-Path $errLog) {
 
@@ -660,7 +662,6 @@ jobs:
                 'https://[a-zA-Z0-9\-]+\.trycloudflare\.com') {
 
                 $cfURL = $matches[0]
-
                 break
               }
             }
@@ -670,22 +671,10 @@ jobs:
 
           if (!$cfURL) {
 
-            Write-Host "::error::Cloudflare URL was not found."
+            Write-Host "::error::Cloudflare URL not found."
 
             if (Test-Path $errLog) {
-
-              Write-Host ""
-              Write-Host "=== Cloudflare stderr ==="
-
               Get-Content $errLog -Tail 100
-            }
-
-            if (Test-Path $outLog) {
-
-              Write-Host ""
-              Write-Host "=== Cloudflare stdout ==="
-
-              Get-Content $outLog -Tail 100
             }
 
             exit 1
@@ -703,20 +692,39 @@ jobs:
 
 
       # ============================================================
-      # 13. Test Cloudflare
+      # 13. Test local IIS AND Cloudflare
       # ============================================================
-      - name: Test Cloudflare Tunnel
+      - name: Test IIS and Cloudflare
         shell: powershell
         run: |
           Write-Host "=========================================="
-          Write-Host " Testing Cloudflare Tunnel"
+          Write-Host " Testing IIS / Cloudflare"
           Write-Host "=========================================="
 
-          Start-Sleep -Seconds 10
+          Write-Host ""
+          Write-Host "=== Local IIS Test ==="
+
+          try {
+
+            $local = Invoke-WebRequest `
+              -Uri "http://127.0.0.1/" `
+              -UseBasicParsing `
+              -TimeoutSec 20 `
+              -ErrorAction Stop
+
+            Write-Host "Local IIS: HTTP $($local.StatusCode)"
+
+          }
+          catch {
+
+            Write-Host "::warning::Local IIS test failed."
+            Write-Host $_.Exception.Message
+          }
 
           Write-Host ""
-          Write-Host "Cloudflare URL:"
-          Write-Host $env:CF_URL
+          Write-Host "=== Cloudflare Test ==="
+
+          Start-Sleep -Seconds 10
 
           try {
 
@@ -727,7 +735,7 @@ jobs:
               -ErrorAction Stop
 
             Write-Host ""
-            Write-Host "HTTP Status: $($response.StatusCode)"
+            Write-Host "Cloudflare HTTP Status: $($response.StatusCode)"
 
           }
           catch {
@@ -736,6 +744,32 @@ jobs:
             Write-Host "::warning::Cloudflare HTTP test failed."
 
             Write-Host $_.Exception.Message
+
+            Write-Host ""
+            Write-Host "Cloudflare process status:"
+
+            $cf = Get-Process cloudflared `
+              -ErrorAction SilentlyContinue
+
+            if ($cf) {
+
+              Write-Host "RUNNING - PID $($cf.Id)"
+
+            }
+            else {
+
+              Write-Host "NOT RUNNING"
+            }
+
+            Write-Host ""
+            Write-Host "=== cloudflared stderr ==="
+
+            if (Test-Path "$env:RUNNER_TEMP\cf-err.log") {
+
+              Get-Content `
+                "$env:RUNNER_TEMP\cf-err.log" `
+                -Tail 100
+            }
           }
 
 
@@ -771,18 +805,18 @@ jobs:
 
           Write-Host ""
 
-          Write-Host "Password:"
-          Write-Host "$env:RDP_PASS"
-
-          Write-Host ""
           Write-Host "================================================="
           Write-Host ""
 
+          Write-Host "Password is stored in RDP_PASS environment variable."
+          Write-Host "Do NOT publish the password in repository logs."
+
+          Write-Host ""
           Write-Host "The runner will remain active."
 
 
       # ============================================================
-      # 15. Keep GitHub Runner Alive
+      # 15. Keep runner alive + Cloudflare watchdog
       # ============================================================
       - name: Keep Session Alive
         shell: powershell
@@ -791,6 +825,61 @@ jobs:
           Write-Host " RDP SESSION ACTIVE"
           Write-Host "=========================================="
 
+          $cloudflared = "$env:RUNNER_TEMP\cloudflared.exe"
+
+          $errLog = "$env:RUNNER_TEMP\cf-err.log"
+          $outLog = "$env:RUNNER_TEMP\cf-out.log"
+
+          function Start-Cloudflare {
+
+            Write-Host ""
+            Write-Host "=========================================="
+            Write-Host " Starting cloudflared watchdog"
+            Write-Host "=========================================="
+
+            Remove-Item `
+              $errLog,
+              $outLog `
+              -Force `
+              -ErrorAction SilentlyContinue
+
+            $p = Start-Process `
+              -FilePath $cloudflared `
+              -ArgumentList @(
+                "tunnel",
+                "--url",
+                "http://127.0.0.1:80",
+                "--no-autoupdate"
+              ) `
+              -RedirectStandardError $errLog `
+              -RedirectStandardOutput $outLog `
+              -PassThru `
+              -WindowStyle Hidden
+
+            Write-Host "cloudflared PID: $($p.Id)"
+
+            return $p
+          }
+
+
+          # Check existing Cloudflare process
+          $cloudflareProcess = `
+            Get-Process cloudflared `
+            -ErrorAction SilentlyContinue
+
+
+          if (!$cloudflareProcess) {
+
+            Write-Host ""
+            Write-Host "Cloudflare is not running."
+            Write-Host "Starting new tunnel..."
+
+            $cloudflareProcess = Start-Cloudflare
+
+            Start-Sleep -Seconds 5
+          }
+
+
           while ($true) {
 
             $time = `
@@ -798,37 +887,134 @@ jobs:
               -Format "yyyy-MM-dd HH:mm:ss"
 
             Write-Host ""
-            Write-Host "[$time] Session alive..."
+            Write-Host "------------------------------------------"
+            Write-Host "[$time] Session alive"
+            Write-Host "------------------------------------------"
 
-            # Check IIS
+
+            # ======================================================
+            # IIS
+            # ======================================================
+
             $iis = `
               Get-Service W3SVC `
               -ErrorAction SilentlyContinue
 
             if ($iis) {
-              Write-Host "IIS      : $($iis.Status)"
+
+              Write-Host "IIS        : $($iis.Status)"
+
+              if ($iis.Status -ne "Running") {
+
+                Write-Host "IIS stopped. Restarting..."
+
+                Start-Service W3SVC `
+                  -ErrorAction SilentlyContinue
+              }
             }
 
-            # Check RDP
+
+            # ======================================================
+            # RDP
+            # ======================================================
+
             $rdp = `
               Get-Service TermService `
               -ErrorAction SilentlyContinue
 
             if ($rdp) {
-              Write-Host "RDP      : $($rdp.Status)"
+
+              Write-Host "RDP        : $($rdp.Status)"
+
+              if ($rdp.Status -ne "Running") {
+
+                Write-Host "RDP stopped. Restarting..."
+
+                Start-Service TermService `
+                  -ErrorAction SilentlyContinue
+              }
             }
 
-            # Check Cloudflare
+
+            # ======================================================
+            # Cloudflare
+            # ======================================================
+
             $cf = `
               Get-Process cloudflared `
               -ErrorAction SilentlyContinue
 
             if ($cf) {
-              Write-Host "Cloudflare: RUNNING"
+
+              Write-Host "Cloudflare  : RUNNING"
+              Write-Host "PID         : $($cf.Id)"
+
             }
             else {
-              Write-Host "Cloudflare: NOT RUNNING"
+
+              Write-Host "Cloudflare  : NOT RUNNING"
+
+              Write-Host ""
+              Write-Host "Cloudflare process died."
+              Write-Host "Attempting automatic restart..."
+
+              if (Test-Path $errLog) {
+
+                Write-Host ""
+                Write-Host "Last Cloudflare log:"
+
+                Get-Content `
+                  $errLog `
+                  -Tail 30
+              }
+
+              $cloudflareProcess = Start-Cloudflare
+
+              Start-Sleep -Seconds 5
+
+              $newCF = `
+                Get-Process cloudflared `
+                -ErrorAction SilentlyContinue
+
+              if ($newCF) {
+
+                Write-Host ""
+                Write-Host "Cloudflare restarted."
+                Write-Host "New PID: $($newCF.Id)"
+
+              }
+              else {
+
+                Write-Host ""
+                Write-Host "::warning::Cloudflare restart failed."
+              }
             }
 
-            Start-Sleep -Seconds 300
+
+            # ======================================================
+            # Local IIS health check
+            # ======================================================
+
+            try {
+
+              $local = Invoke-WebRequest `
+                -Uri "http://127.0.0.1/" `
+                -UseBasicParsing `
+                -TimeoutSec 10 `
+                -ErrorAction Stop
+
+              Write-Host "Local IIS   : HTTP $($local.StatusCode)"
+
+            }
+            catch {
+
+              Write-Host "Local IIS   : ERROR"
+            }
+
+
+            # ======================================================
+            # Wait 30 seconds
+            # ======================================================
+
+            Start-Sleep -Seconds 30
           }
