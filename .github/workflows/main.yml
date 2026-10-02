@@ -1,49 +1,445 @@
-name: Pure RDP via Tailscale
+```yaml
+name: Windows 11 - RDP + Tailscale + noVNC
 
 on:
   workflow_dispatch:
 
 jobs:
-  rdp-session:
+  windows-session:
     runs-on: windows-latest
     timeout-minutes: 360
 
     steps:
-      - name: Configure RDP Service & User
-        shell: powershell
-        run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          $runnerAdminPass = "WindowsRDP#2025"
-          net user "runneradmin" $runnerAdminPass
-          echo "RDP_USER=runneradmin" >> $env:GITHUB_ENV
-          echo "RDP_PASS=$runnerAdminPass" >> $env:GITHUB_ENV
-          
-      - name: Install and Connect Tailscale
-        shell: powershell
-        run: |
-          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile "tailscale-setup.exe"
-          Start-Process -FilePath ".\tailscale-setup.exe" -ArgumentList "/S" -Wait
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=github-runner-$env:GITHUB_RUN_ID
-          $tsIP = $null
-          for ($i=1; $i -le 15; $i++){ 
-            $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-            if($tsIP){break}
-            Start-Sleep 4 
-          }
-          if (-not $tsIP) { 
-            exit 1 
-          }
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: Display Connection Details and Keep Alive
+      # ============================================================
+      # 1. Configure Windows RDP
+      # ============================================================
+      - name: Configure RDP and Administrator
         shell: powershell
         run: |
-          Write-Host "================ RDP IS READY ================"
-          Write-Host "IP Address: ${{ env.TAILSCALE_IP }}"
-          Write-Host "Username  : ${{ env.RDP_USER }}"
-          Write-Host "Password  : ${{ env.RDP_PASS }}"
-          Write-Host "=============================================="
-          while ($true) {
-            Start-Sleep 300
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "Enabling Remote Desktop..."
+
+          Set-ItemProperty `
+            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Name "fDenyTSConnections" `
+            -Value 0 `
+            -Force
+
+          Set-ItemProperty `
+            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name "UserAuthentication" `
+            -Value 1 `
+            -Force
+
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+          $Password = "WindowsRDP#2025"
+
+          net user runneradmin $Password
+
+          echo "RDP_USER=runneradmin" >> $env:GITHUB_ENV
+          echo "RDP_PASSWORD=$Password" >> $env:GITHUB_ENV
+
+          Write-Host "RDP configured."
+
+      # ============================================================
+      # 2. Tailscale
+      # ============================================================
+      - name: Connect Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TAILSCALE_CLIENTID }}
+          oauth-secret: ${{ secrets.TAILSCALE_SECRET }}
+          tags: tag:actions
+
+      # ============================================================
+      # 3. Install TightVNC
+      # ============================================================
+      - name: Install TightVNC Server
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $url = "https://www.tightvnc.com/download/2.8.81/tightvnc-2.8.81-gpl-setup-64bit.msi"
+          $installer = "$env:TEMP\tightvnc.msi"
+
+          Write-Host "Downloading TightVNC..."
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $installer
+
+          Write-Host "Installing TightVNC..."
+
+          Start-Process msiexec.exe `
+            -ArgumentList @(
+              "/i",
+              "`"$installer`"",
+              "/quiet",
+              "/norestart",
+              "ADDLOCAL=Server",
+              "SERVER_REGISTER_AS_SERVICE=1",
+              "SERVER_ADD_FIREWALL_EXCEPTION=1",
+              "SERVER_ALLOW_SAS=1"
+            ) `
+            -Wait `
+            -NoNewWindow
+
+          Write-Host "TightVNC installation finished."
+
+      # ============================================================
+      # 4. Configure TightVNC password / service
+      # ============================================================
+      - name: Configure TightVNC
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $vnc = "C:\Program Files\TightVNC\tvnserver.exe"
+
+          if (!(Test-Path $vnc)) {
+            throw "TightVNC server was not found at $vnc"
           }
+
+          Write-Host "Installing TightVNC service..."
+
+          & $vnc -install -silent
+
+          Start-Sleep -Seconds 3
+
+          Write-Host "Starting TightVNC service..."
+
+          & $vnc -start
+
+          Start-Sleep -Seconds 5
+
+          Get-Service | Where-Object {
+            $_.Name -match "tvn|tightvnc"
+          } | Format-Table -AutoSize
+
+          Write-Host "TightVNC service started."
+
+      # ============================================================
+      # 5. Verify VNC port
+      # ============================================================
+      - name: Verify VNC
+        shell: powershell
+        run: |
+          Write-Host "Checking VNC port 5900..."
+
+          $ok = $false
+
+          for ($i = 0; $i -lt 20; $i++) {
+
+            $connection = Test-NetConnection `
+              -ComputerName 127.0.0.1 `
+              -Port 5900 `
+              -WarningAction SilentlyContinue
+
+            if ($connection.TcpTestSucceeded) {
+              $ok = $true
+              break
+            }
+
+            Start-Sleep -Seconds 2
+          }
+
+          if (!$ok) {
+            Write-Host "VNC port 5900 is not responding."
+
+            Get-Process | Where-Object {
+              $_.ProcessName -match "tvn|vnc"
+            } | Format-Table -AutoSize
+
+            Get-Service | Where-Object {
+              $_.Name -match "tvn|tightvnc"
+            } | Format-Table -AutoSize
+
+            throw "VNC server did not start."
+          }
+
+          Write-Host "VNC server is listening on 127.0.0.1:5900."
+
+      # ============================================================
+      # 6. Download noVNC
+      # ============================================================
+      - name: Download noVNC
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $noVNC = "C:\noVNC"
+
+          if (Test-Path $noVNC) {
+            Remove-Item $noVNC -Recurse -Force
+          }
+
+          Write-Host "Cloning noVNC..."
+
+          git clone --depth 1 https://github.com/novnc/noVNC.git $noVNC
+
+          Write-Host "noVNC installed."
+
+      # ============================================================
+      # 7. Install Python + websockify
+      # ============================================================
+      - name: Install websockify
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "Checking Python..."
+
+          $python = Get-Command python -ErrorAction SilentlyContinue
+
+          if (!$python) {
+            Write-Host "Python not found. Installing through winget..."
+
+            winget install `
+              --id Python.Python.3.13 `
+              --exact `
+              --silent `
+              --accept-package-agreements `
+              --accept-source-agreements
+          }
+
+          $pythonPath = (Get-Command python.exe -ErrorAction SilentlyContinue).Source
+
+          if (!$pythonPath) {
+            $pythonPath = "C:\Program Files\Python313\python.exe"
+          }
+
+          if (!(Test-Path $pythonPath)) {
+            $pythonPath = (Get-Command py.exe -ErrorAction SilentlyContinue).Source
+          }
+
+          if (!$pythonPath) {
+            throw "Python was not found after installation."
+          }
+
+          Write-Host "Python: $pythonPath"
+
+          & $pythonPath -m pip install --upgrade pip
+
+          & $pythonPath -m pip install websockify
+
+          echo "PYTHON_EXE=$pythonPath" >> $env:GITHUB_ENV
+
+          Write-Host "websockify installed."
+
+      # ============================================================
+      # 8. Start websockify + noVNC
+      # ============================================================
+      - name: Start noVNC
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $noVNC = "C:\noVNC"
+          $websockify = Join-Path $env:PYTHON_EXE "..\Scripts\websockify.exe"
+
+          $websockify = [System.IO.Path]::GetFullPath($websockify)
+
+          if (!(Test-Path $websockify)) {
+            $websockify = "websockify"
+          }
+
+          Write-Host "Starting noVNC..."
+          Write-Host "websockify: $websockify"
+
+          $log = "C:\noVNC\websockify.log"
+
+          $arguments = @(
+            "--web",
+            $noVNC,
+            "6080",
+            "127.0.0.1:5900"
+          )
+
+          Start-Process `
+            -FilePath $websockify `
+            -ArgumentList $arguments `
+            -WorkingDirectory $noVNC `
+            -RedirectStandardOutput $log `
+            -RedirectStandardError "C:\noVNC\websockify-error.log" `
+            -WindowStyle Hidden
+
+          Start-Sleep -Seconds 5
+
+          Write-Host "Checking port 6080..."
+
+          $ok = $false
+
+          for ($i = 0; $i -lt 20; $i++) {
+
+            $connection = Test-NetConnection `
+              -ComputerName 127.0.0.1 `
+              -Port 6080 `
+              -WarningAction SilentlyContinue
+
+            if ($connection.TcpTestSucceeded) {
+              $ok = $true
+              break
+            }
+
+            Start-Sleep -Seconds 2
+          }
+
+          if (!$ok) {
+            Write-Host "websockify output:"
+            if (Test-Path $log) {
+              Get-Content $log -ErrorAction SilentlyContinue
+            }
+
+            Write-Host "websockify error:"
+            if (Test-Path "C:\noVNC\websockify-error.log") {
+              Get-Content "C:\noVNC\websockify-error.log" -ErrorAction SilentlyContinue
+            }
+
+            throw "noVNC/websockify did not start."
+          }
+
+          Write-Host "noVNC is listening on port 6080."
+
+      # ============================================================
+      # 9. Install cloudflared
+      # ============================================================
+      - name: Install cloudflared
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $cloudflared = "C:\cloudflared.exe"
+
+          Write-Host "Downloading cloudflared..."
+
+          Invoke-WebRequest `
+            -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" `
+            -OutFile $cloudflared
+
+          if (!(Test-Path $cloudflared)) {
+            throw "cloudflared download failed."
+          }
+
+          Write-Host "cloudflared installed."
+
+      # ============================================================
+      # 10. Create Cloudflare Quick Tunnel
+      # ============================================================
+      - name: Start Cloudflare Quick Tunnel
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $log = "C:\cloudflared.log"
+
+          Write-Host "Starting Cloudflare Quick Tunnel..."
+          Write-Host "Target: http://127.0.0.1:6080"
+
+          Start-Process `
+            -FilePath "C:\cloudflared.exe" `
+            -ArgumentList @(
+              "tunnel",
+              "--url",
+              "http://127.0.0.1:6080"
+            ) `
+            -RedirectStandardOutput $log `
+            -RedirectStandardError $log `
+            -WindowStyle Hidden
+
+          Write-Host "Waiting for Quick Tunnel URL..."
+
+          $url = $null
+
+          for ($i = 0; $i -lt 60; $i++) {
+
+            Start-Sleep -Seconds 2
+
+            if (Test-Path $log) {
+
+              $content = Get-Content $log -Raw -ErrorAction SilentlyContinue
+
+              $match = [regex]::Match(
+                $content,
+                'https://[a-zA-Z0-9-]+\.trycloudflare\.com'
+              )
+
+              if ($match.Success) {
+                $url = $match.Value
+                break
+              }
+            }
+          }
+
+          if (!$url) {
+            Write-Host "cloudflared log:"
+            Get-Content $log -ErrorAction SilentlyContinue
+
+            throw "Cloudflare Quick Tunnel URL was not found."
+          }
+
+          echo "NOVNC_URL=$url" >> $env:GITHUB_ENV
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "                 noVNC IS READY"
+          Write-Host "============================================================"
+          Write-Host ""
+          Write-Host "Browser URL:"
+          Write-Host "$url/vnc.html?autoconnect=true&resize=scale"
+          Write-Host ""
+          Write-Host "============================================================"
+
+      # ============================================================
+      # 11. Display connection information
+      # ============================================================
+      - name: Display Connection Details
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "              WINDOWS 11 SESSION READY"
+          Write-Host "============================================================"
+          Write-Host ""
+
+          Write-Host "RDP"
+          Write-Host "------------------------------------------------------------"
+
+          $tsIp = & tailscale ip -4
+
+          Write-Host "Tailscale IP : $tsIp"
+          Write-Host "Username     : $env:RDP_USER"
+          Write-Host "Password     : $env:RDP_PASSWORD"
+
+          Write-Host ""
+          Write-Host "noVNC"
+          Write-Host "------------------------------------------------------------"
+
+          Write-Host "URL:"
+          Write-Host "$env:NOVNC_URL/vnc.html?autoconnect=true&resize=scale"
+
+          Write-Host ""
+          Write-Host "VNC backend  : 127.0.0.1:5900"
+          Write-Host "WebSocket    : 127.0.0.1:6080"
+
+          Write-Host ""
+          Write-Host "============================================================"
+          Write-Host "Session will remain alive for up to 6 hours."
+          Write-Host "============================================================"
+          Write-Host ""
+
+      # ============================================================
+      # 12. Keep runner alive
+      # ============================================================
+      - name: Keep Windows Session Alive
+        shell: powershell
+        run: |
+          Write-Host "Windows session is running."
+
+          while ($true) {
+            Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Session alive..."
+            Start-Sleep -Seconds 300
+          }
+```
