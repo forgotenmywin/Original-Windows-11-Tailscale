@@ -11,7 +11,7 @@ jobs:
     steps:
 
       # ============================================================
-      # 1. Configure RDP
+      # RDP
       # ============================================================
       - name: Configure RDP
         shell: powershell
@@ -21,9 +21,7 @@ jobs:
           $Username = "runneradmin"
           $Password = "WindowsRDP#2025"
 
-          Write-Host "============================================"
-          Write-Host "Configuring Windows RDP"
-          Write-Host "============================================"
+          Write-Host "Configuring Remote Desktop..."
 
           Set-ItemProperty `
             -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
@@ -74,7 +72,7 @@ jobs:
           Write-Host "RDP configured."
 
       # ============================================================
-      # 2. Install TightVNC
+      # TightVNC INSTALL
       # ============================================================
       - name: Install TightVNC
         shell: powershell
@@ -86,6 +84,7 @@ jobs:
           Write-Host "============================================"
 
           $Installer = "$env:TEMP\tightvnc.msi"
+
           $VncPassword = "MyVNC123"
 
           Invoke-WebRequest `
@@ -127,22 +126,61 @@ jobs:
           Write-Host "TightVNC installed."
 
       # ============================================================
-      # 3. Start TightVNC
+      # START TIGHTVNC + ENABLE LOOPBACK
       # ============================================================
       - name: Start TightVNC
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
+          Write-Host "============================================"
+          Write-Host "Configuring TightVNC"
+          Write-Host "============================================"
+
           $VncExe = "C:\Program Files\TightVNC\tvnserver.exe"
+          $RegPath = "HKLM:\SOFTWARE\TightVNC\Server"
 
           if (!(Test-Path $VncExe)) {
             throw "TightVNC executable not found."
           }
 
-          & $VncExe -install -silent 2>$null
+          # ----------------------------------------------------------
+          # IMPORTANT:
+          # Allow websockify/noVNC on localhost to connect to TightVNC
+          # ----------------------------------------------------------
+
+          New-Item `
+            -Path $RegPath `
+            -Force | Out-Null
+
+          New-ItemProperty `
+            -Path $RegPath `
+            -Name "AllowLoopback" `
+            -PropertyType DWord `
+            -Value 1 `
+            -Force | Out-Null
+
+          New-ItemProperty `
+            -Path $RegPath `
+            -Name "LoopbackOnly" `
+            -PropertyType DWord `
+            -Value 0 `
+            -Force | Out-Null
+
+          Write-Host "AllowLoopback = 1"
+          Write-Host "LoopbackOnly  = 0"
+
+          # ----------------------------------------------------------
+          # Restart TightVNC so the settings are loaded
+          # ----------------------------------------------------------
+
+          & $VncExe -stop -silent 2>$null
 
           Start-Sleep -Seconds 3
+
+          & $VncExe -install -silent 2>$null
+
+          Start-Sleep -Seconds 2
 
           & $VncExe -start -silent 2>$null
 
@@ -153,6 +191,7 @@ jobs:
             -ErrorAction SilentlyContinue
 
           if ($Service -and $Service.Status -ne "Running") {
+
             Start-Service `
               -Name "tvnserver" `
               -ErrorAction SilentlyContinue
@@ -160,18 +199,28 @@ jobs:
             Start-Sleep -Seconds 3
           }
 
+          Write-Host ""
+          Write-Host "TightVNC Registry:"
+          Get-ItemProperty $RegPath |
+            Select-Object AllowLoopback, LoopbackOnly |
+            Format-List
+
+          Write-Host ""
+          Write-Host "TightVNC Service:"
           Get-Service `
             -Name "tvnserver" `
             -ErrorAction SilentlyContinue |
             Format-Table -AutoSize
 
       # ============================================================
-      # 4. Verify VNC
+      # VERIFY VNC
       # ============================================================
       - name: Verify VNC
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
+
+          Write-Host "Checking VNC port 5900..."
 
           $Ready = $false
 
@@ -183,12 +232,18 @@ jobs:
               -WarningAction SilentlyContinue
 
             if ($Result.TcpTestSucceeded) {
+
+              Write-Host ""
+              Write-Host "============================================"
               Write-Host "VNC is listening on 127.0.0.1:5900"
+              Write-Host "============================================"
+
               $Ready = $true
               break
             }
 
             Write-Host "Waiting for VNC... $i/30"
+
             Start-Sleep -Seconds 2
           }
 
@@ -197,12 +252,14 @@ jobs:
           }
 
       # ============================================================
-      # 5. Download noVNC
+      # INSTALL NOVNC
       # ============================================================
       - name: Install noVNC
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
+
+          Write-Host "Installing noVNC..."
 
           $NoVncPath = "C:\noVNC"
 
@@ -225,17 +282,22 @@ jobs:
           Write-Host "noVNC installed."
 
       # ============================================================
-      # 6. Install Python + websockify
+      # INSTALL WEBSOCKIFY
       # ============================================================
       - name: Install websockify
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $Python = Get-Command python.exe `
+          Write-Host "Checking Python..."
+
+          $Python = Get-Command `
+            python.exe `
             -ErrorAction SilentlyContinue
 
           if (!$Python) {
+
+            Write-Host "Python not found. Installing Python 3.12..."
 
             winget install `
               --id Python.Python.3.12 `
@@ -247,7 +309,8 @@ jobs:
             Start-Sleep -Seconds 5
           }
 
-          $Python = Get-Command python.exe `
+          $Python = Get-Command `
+            python.exe `
             -ErrorAction SilentlyContinue
 
           if (!$Python) {
@@ -256,13 +319,19 @@ jobs:
 
           $PythonPath = $Python.Source
 
-          Write-Host "Python: $PythonPath"
+          Write-Host "Python:"
+          & $PythonPath --version
+
+          Write-Host "Installing websockify..."
 
           & $PythonPath -m pip install --upgrade pip
+
           & $PythonPath -m pip install websockify
 
+          $PythonDir = Split-Path $PythonPath
+
           $Scripts = Join-Path `
-            (Split-Path $PythonPath) `
+            $PythonDir `
             "Scripts"
 
           $Websockify = Join-Path `
@@ -282,17 +351,20 @@ jobs:
             $Websockify = $Command.Source
           }
 
+          Write-Host "websockify:"
+          Write-Host $Websockify
+
           "WEBSOCKIFY_EXE=$Websockify" >> $env:GITHUB_ENV
 
-          Write-Host "websockify: $Websockify"
-
       # ============================================================
-      # 7. Install cloudflared
+      # INSTALL CLOUDFLARED
       # ============================================================
       - name: Install cloudflared
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
+
+          Write-Host "Installing cloudflared..."
 
           $Cloudflared = "C:\cloudflared.exe"
 
@@ -308,11 +380,9 @@ jobs:
           & $Cloudflared version
 
       # ============================================================
-      # 8. START EVERYTHING IN ONE STEP
-      #
+      # START NOVNC + CLOUDFLARE
       # IMPORTANT:
-      # websockify and cloudflared are both launched here.
-      # This keeps them inside the same running job step.
+      # websockify and cloudflared are started in the SAME STEP.
       # ============================================================
       - name: Start noVNC + Cloudflare and Keep Alive
         shell: powershell
@@ -324,7 +394,9 @@ jobs:
           $Cloudflared = "C:\cloudflared.exe"
 
           $VncTarget = "127.0.0.1:5900"
+
           $WebPort = 6080
+
           $Origin = "http://127.0.0.1:6080"
 
           $WebStdout = "C:\websockify.log"
@@ -332,31 +404,38 @@ jobs:
 
           $CfStdout = "C:\cloudflared-stdout.log"
           $CfStderr = "C:\cloudflared-stderr.log"
+
           $CfDebug = "C:\cloudflared-debug.log"
 
-          Remove-Item $WebStdout -Force -ErrorAction SilentlyContinue
-          Remove-Item $WebStderr -Force -ErrorAction SilentlyContinue
-          Remove-Item $CfStdout -Force -ErrorAction SilentlyContinue
-          Remove-Item $CfStderr -Force -ErrorAction SilentlyContinue
-          Remove-Item $CfDebug -Force -ErrorAction SilentlyContinue
+          # ----------------------------------------------------------
+          # Cleanup old logs
+          # ----------------------------------------------------------
 
-          # ----------------------------------------------------------
-          # Start websockify
-          # ----------------------------------------------------------
+          Remove-Item `
+            $WebStdout,
+            $WebStderr,
+            $CfStdout,
+            $CfStderr,
+            $CfDebug `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          # ==========================================================
+          # START WEBSOCKIFY
+          # ==========================================================
 
           Write-Host ""
           Write-Host "============================================"
           Write-Host "Starting noVNC / websockify"
           Write-Host "============================================"
-          Write-Host ""
 
           $WebProcess = Start-Process `
             -FilePath $Websockify `
             -ArgumentList @(
-              "--web"
-              $NoVncPath
-              "--verbose"
-              "0.0.0.0:6080"
+              "--web",
+              $NoVncPath,
+              "--verbose",
+              "0.0.0.0:6080",
               $VncTarget
             ) `
             -WorkingDirectory $NoVncPath `
@@ -367,9 +446,9 @@ jobs:
 
           Write-Host "websockify PID: $($WebProcess.Id)"
 
-          # ----------------------------------------------------------
-          # Wait for local HTTP service
-          # ----------------------------------------------------------
+          # ==========================================================
+          # WAIT FOR NOVNC
+          # ==========================================================
 
           $LocalReady = $false
 
@@ -379,9 +458,7 @@ jobs:
 
             if ($WebProcess.HasExited) {
 
-              Write-Host ""
-              Write-Host "websockify exited."
-              Write-Host ""
+              Write-Host "websockify exited unexpectedly."
 
               Get-Content `
                 $WebStdout `
@@ -414,12 +491,13 @@ jobs:
 
                   Write-Host ""
                   Write-Host "Local noVNC HTTP: 200"
-                  Write-Host ""
 
                   break
                 }
+
               }
               catch {
+
                 Write-Host "Waiting for HTTP..."
               }
             }
@@ -429,14 +507,10 @@ jobs:
 
           if (!$LocalReady) {
 
-            Write-Host ""
-            Write-Host "========== websockify stdout =========="
             Get-Content `
               $WebStdout `
               -ErrorAction SilentlyContinue
 
-            Write-Host ""
-            Write-Host "========== websockify stderr =========="
             Get-Content `
               $WebStderr `
               -ErrorAction SilentlyContinue
@@ -444,30 +518,29 @@ jobs:
             throw "Local noVNC did not become ready."
           }
 
-          # ----------------------------------------------------------
-          # Start cloudflared IN THE SAME STEP
-          # ----------------------------------------------------------
+          # ==========================================================
+          # START CLOUDFLARE QUICK TUNNEL
+          # ==========================================================
 
           Write-Host ""
           Write-Host "============================================"
           Write-Host "Starting Cloudflare Quick Tunnel"
           Write-Host "============================================"
-          Write-Host ""
 
           $CfProcess = Start-Process `
             -FilePath $Cloudflared `
             -ArgumentList @(
-              "tunnel"
-              "--no-autoupdate"
-              "--protocol"
-              "auto"
-              "--edge-ip-version"
-              "4"
-              "--loglevel"
-              "debug"
-              "--logfile"
-              $CfDebug
-              "--url"
+              "tunnel",
+              "--no-autoupdate",
+              "--protocol",
+              "auto",
+              "--edge-ip-version",
+              "4",
+              "--loglevel",
+              "debug",
+              "--logfile",
+              $CfDebug,
+              "--url",
               $Origin
             ) `
             -RedirectStandardOutput $CfStdout `
@@ -477,9 +550,9 @@ jobs:
 
           Write-Host "cloudflared PID: $($CfProcess.Id)"
 
-          # ----------------------------------------------------------
-          # Find tunnel URL + registration
-          # ----------------------------------------------------------
+          # ==========================================================
+          # WAIT FOR CLOUDFLARE
+          # ==========================================================
 
           $TunnelUrl = $null
           $Registered = $false
@@ -490,9 +563,7 @@ jobs:
 
             if ($CfProcess.HasExited) {
 
-              Write-Host ""
-              Write-Host "cloudflared exited."
-              Write-Host ""
+              Write-Host "cloudflared exited unexpectedly."
 
               Get-Content `
                 $CfStdout `
@@ -534,6 +605,10 @@ jobs:
               )
             }
 
+            # --------------------------------------------------------
+            # Find trycloudflare URL
+            # --------------------------------------------------------
+
             if (!$TunnelUrl) {
 
               $Match = [regex]::Match(
@@ -546,9 +621,11 @@ jobs:
               }
             }
 
-            if (
-              $Content -match "Registered tunnel connection"
-            ) {
+            # --------------------------------------------------------
+            # Check registered connection
+            # --------------------------------------------------------
+
+            if ($Content -match "Registered tunnel connection") {
               $Registered = $true
             }
 
@@ -557,7 +634,10 @@ jobs:
             }
 
             if ($Registered) {
+
+              Write-Host ""
               Write-Host "Cloudflare tunnel registered."
+
               break
             }
 
@@ -565,9 +645,6 @@ jobs:
           }
 
           if (!$TunnelUrl) {
-
-            Write-Host ""
-            Write-Host "========== Cloudflare Debug =========="
 
             Get-Content `
               $CfDebug `
@@ -579,9 +656,6 @@ jobs:
 
           if (!$Registered) {
 
-            Write-Host ""
-            Write-Host "========== Cloudflare Debug =========="
-
             Get-Content `
               $CfDebug `
               -Tail 200 `
@@ -590,13 +664,14 @@ jobs:
             throw "Cloudflare tunnel was not registered."
           }
 
+          # ==========================================================
+          # PUBLIC URL
+          # ==========================================================
+
           $NoVncUrl = "$TunnelUrl/vnc.html"
 
-          # ----------------------------------------------------------
-          # IMPORTANT:
-          # Test while BOTH processes are alive in THIS SAME STEP.
-          # ----------------------------------------------------------
-
+          Write-Host ""
+          Write-Host "Waiting for public HTTP..."
           Start-Sleep -Seconds 10
 
           $PublicReady = $false
@@ -604,19 +679,6 @@ jobs:
           for ($i = 1; $i -le 20; $i++) {
 
             if ($WebProcess.HasExited) {
-
-              Write-Host ""
-              Write-Host "ERROR: websockify died."
-              Write-Host ""
-
-              Get-Content `
-                $WebStdout `
-                -ErrorAction SilentlyContinue
-
-              Get-Content `
-                $WebStderr `
-                -ErrorAction SilentlyContinue
-
               throw "websockify died while Cloudflare was starting."
             }
 
@@ -631,72 +693,70 @@ jobs:
                 -UseBasicParsing `
                 -TimeoutSec 15
 
-              Write-Host `
-                "Public HTTP status: $($Response.StatusCode)"
+              Write-Host "Public HTTP status: $($Response.StatusCode)"
 
               if ($Response.StatusCode -eq 200) {
 
                 $PublicReady = $true
+
                 break
               }
             }
             catch {
 
-              Write-Host `
-                "Public HTTP failed: $($_.Exception.Message)"
+              Write-Host "Public HTTP failed: $($_.Exception.Message)"
             }
 
             Start-Sleep -Seconds 3
           }
 
-          # ----------------------------------------------------------
-          # Display result
-          # ----------------------------------------------------------
+          # ==========================================================
+          # SHOW CONNECTION INFORMATION
+          # ==========================================================
 
+          Write-Host ""
           Write-Host ""
           Write-Host "============================================================"
           Write-Host "                     noVNC READY"
           Write-Host "============================================================"
           Write-Host ""
+
           Write-Host "URL:"
-          Write-Host ""
           Write-Host $NoVncUrl
+
           Write-Host ""
+
           Write-Host "VNC PASSWORD:"
           Write-Host "MyVNC123"
+
           Write-Host ""
+
           Write-Host "RDP USER:"
           Write-Host "runneradmin"
+
           Write-Host ""
+
           Write-Host "RDP PASSWORD:"
           Write-Host "WindowsRDP#2025"
+
           Write-Host ""
+
           Write-Host "============================================================"
           Write-Host ""
 
           if (!$PublicReady) {
 
             Write-Host "Public HTTP test did not return 200."
-            Write-Host "The URL is still printed for manual testing."
-            Write-Host ""
-
-            Write-Host "========== Cloudflare debug =========="
 
             Get-Content `
               $CfDebug `
               -Tail 200 `
               -ErrorAction SilentlyContinue
 
-            Write-Host ""
-            Write-Host "========== websockify stdout =========="
-
             Get-Content `
               $WebStdout `
               -Tail 100 `
               -ErrorAction SilentlyContinue
-
-            Write-Host ""
-            Write-Host "========== websockify stderr =========="
 
             Get-Content `
               $WebStderr `
@@ -704,34 +764,28 @@ jobs:
               -ErrorAction SilentlyContinue
           }
 
-          # ----------------------------------------------------------
-          # KEEP THIS STEP ALIVE
-          #
-          # Both processes are monitored here.
-          # ----------------------------------------------------------
+          # ==========================================================
+          # KEEP EVERYTHING ALIVE
+          # ==========================================================
 
           while ($true) {
 
             Start-Sleep -Seconds 30
 
-            $Now = Get-Date `
-              -Format "yyyy-MM-dd HH:mm:ss"
+            $Now = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+
+            # --------------------------------------------------------
+            # Check websockify
+            # --------------------------------------------------------
 
             if ($WebProcess.HasExited) {
 
-              Write-Host ""
-              Write-Host "websockify stopped at $Now."
-
-              Write-Host ""
-              Write-Host "========== websockify stdout =========="
+              Write-Host "websockify stopped."
 
               Get-Content `
                 $WebStdout `
                 -Tail 100 `
                 -ErrorAction SilentlyContinue
-
-              Write-Host ""
-              Write-Host "========== websockify stderr =========="
 
               Get-Content `
                 $WebStderr `
@@ -741,13 +795,13 @@ jobs:
               throw "websockify stopped."
             }
 
+            # --------------------------------------------------------
+            # Check cloudflared
+            # --------------------------------------------------------
+
             if ($CfProcess.HasExited) {
 
-              Write-Host ""
-              Write-Host "cloudflared stopped at $Now."
-
-              Write-Host ""
-              Write-Host "========== Cloudflare debug =========="
+              Write-Host "cloudflared stopped."
 
               Get-Content `
                 $CfDebug `
@@ -757,6 +811,5 @@ jobs:
               throw "cloudflared stopped."
             }
 
-            Write-Host `
-              "[$Now] Windows + TightVNC + noVNC + Cloudflare alive."
+            Write-Host "[$Now] Windows + TightVNC + noVNC + Cloudflare alive."
           }
