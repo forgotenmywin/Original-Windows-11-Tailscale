@@ -21,7 +21,9 @@ jobs:
           $Username = "runneradmin"
           $Password = "WindowsRDP#2025"
 
-          Write-Host "Configuring Remote Desktop..."
+          Write-Host "============================================"
+          Write-Host "Configuring RDP"
+          Write-Host "============================================"
 
           Set-ItemProperty `
             -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
@@ -72,7 +74,7 @@ jobs:
           Write-Host "RDP configured."
 
       # ============================================================
-      # TightVNC INSTALL
+      # INSTALL TIGHTVNC
       # ============================================================
       - name: Install TightVNC
         shell: powershell
@@ -85,6 +87,7 @@ jobs:
 
           $Installer = "$env:TEMP\tightvnc.msi"
 
+          # Must be 8 characters or fewer for classic VNC authentication.
           $VncPassword = "MyVNC123"
 
           Invoke-WebRequest `
@@ -101,13 +104,18 @@ jobs:
             "`"$Installer`""
             "/quiet"
             "/norestart"
+
             "ADDLOCAL=Server"
+
             "SERVER_REGISTER_AS_SERVICE=1"
             "SERVER_ADD_FIREWALL_EXCEPTION=1"
+
             "SET_ACCEPTRFBCONNECTIONS=1"
             "VALUE_OF_ACCEPTRFBCONNECTIONS=1"
+
             "SET_USEVNCAUTHENTICATION=1"
             "VALUE_OF_USEVNCAUTHENTICATION=1"
+
             "SET_PASSWORD=1"
             "VALUE_OF_PASSWORD=$VncPassword"
           )
@@ -120,13 +128,14 @@ jobs:
             -NoNewWindow
 
           if ($Process.ExitCode -ne 0) {
-            throw "TightVNC installation failed: $($Process.ExitCode)"
+            throw "TightVNC installation failed. Exit code: $($Process.ExitCode)"
           }
 
           Write-Host "TightVNC installed."
 
       # ============================================================
-      # START TIGHTVNC + ENABLE LOOPBACK
+      # START TIGHTVNC
+      # ONLY CHANGE LOOPBACK
       # ============================================================
       - name: Start TightVNC
         shell: powershell
@@ -144,14 +153,48 @@ jobs:
             throw "TightVNC executable not found."
           }
 
+          if (!(Test-Path $RegPath)) {
+            throw "TightVNC registry key not found."
+          }
+
           # ----------------------------------------------------------
           # IMPORTANT:
-          # Allow websockify/noVNC on localhost to connect to TightVNC
+          # Do NOT overwrite Password here.
+          # MSI already configured the correct password.
           # ----------------------------------------------------------
 
-          New-Item `
+          New-ItemProperty `
             -Path $RegPath `
+            -Name "AcceptRfbConnections" `
+            -PropertyType DWord `
+            -Value 1 `
             -Force | Out-Null
+
+          New-ItemProperty `
+            -Path $RegPath `
+            -Name "RfbPort" `
+            -PropertyType DWord `
+            -Value 5900 `
+            -Force | Out-Null
+
+          New-ItemProperty `
+            -Path $RegPath `
+            -Name "UseVncAuthentication" `
+            -PropertyType DWord `
+            -Value 1 `
+            -Force | Out-Null
+
+          New-ItemProperty `
+            -Path $RegPath `
+            -Name "UseControlAuthentication" `
+            -PropertyType DWord `
+            -Value 0 `
+            -Force | Out-Null
+
+          # ----------------------------------------------------------
+          # FIX FOR:
+          # "Sorry, loopback connections are not enabled"
+          # ----------------------------------------------------------
 
           New-ItemProperty `
             -Path $RegPath `
@@ -167,20 +210,42 @@ jobs:
             -Value 0 `
             -Force | Out-Null
 
-          Write-Host "AllowLoopback = 1"
-          Write-Host "LoopbackOnly  = 0"
+          # ----------------------------------------------------------
+          # Verify MSI-created password exists
+          # ----------------------------------------------------------
+
+          $Config = Get-ItemProperty `
+            -Path $RegPath
+
+          if ($null -eq $Config.Password) {
+            throw "TightVNC password was not created by the MSI installer."
+          }
+
+          if ($Config.Password.Length -ne 8) {
+            throw "TightVNC password registry value is invalid. Length: $($Config.Password.Length)"
+          }
+
+          Write-Host ""
+          Write-Host "TightVNC configuration:"
+          Write-Host "AcceptRfbConnections      = $($Config.AcceptRfbConnections)"
+          Write-Host "RfbPort                   = $($Config.RfbPort)"
+          Write-Host "UseVncAuthentication      = $($Config.UseVncAuthentication)"
+          Write-Host "UseControlAuthentication = $($Config.UseControlAuthentication)"
+          Write-Host "AllowLoopback             = $($Config.AllowLoopback)"
+          Write-Host "LoopbackOnly              = $($Config.LoopbackOnly)"
+          Write-Host "Password registry         = OK"
+          Write-Host "Password bytes            = $($Config.Password.Length)"
 
           # ----------------------------------------------------------
-          # Restart TightVNC so the settings are loaded
+          # Restart TightVNC so all settings are loaded
           # ----------------------------------------------------------
+
+          Write-Host ""
+          Write-Host "Restarting TightVNC..."
 
           & $VncExe -stop -silent 2>$null
 
           Start-Sleep -Seconds 3
-
-          & $VncExe -install -silent 2>$null
-
-          Start-Sleep -Seconds 2
 
           & $VncExe -start -silent 2>$null
 
@@ -200,12 +265,6 @@ jobs:
           }
 
           Write-Host ""
-          Write-Host "TightVNC Registry:"
-          Get-ItemProperty $RegPath |
-            Select-Object AllowLoopback, LoopbackOnly |
-            Format-List
-
-          Write-Host ""
           Write-Host "TightVNC Service:"
           Get-Service `
             -Name "tvnserver" `
@@ -220,7 +279,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host "Checking VNC port 5900..."
+          Write-Host "============================================"
+          Write-Host "Checking VNC port 5900"
+          Write-Host "============================================"
 
           $Ready = $false
 
@@ -259,7 +320,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host "Installing noVNC..."
+          Write-Host "============================================"
+          Write-Host "Installing noVNC"
+          Write-Host "============================================"
 
           $NoVncPath = "C:\noVNC"
 
@@ -289,7 +352,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host "Checking Python..."
+          Write-Host "============================================"
+          Write-Host "Installing websockify"
+          Write-Host "============================================"
 
           $Python = Get-Command `
             python.exe `
@@ -322,21 +387,13 @@ jobs:
           Write-Host "Python:"
           & $PythonPath --version
 
-          Write-Host "Installing websockify..."
-
           & $PythonPath -m pip install --upgrade pip
 
           & $PythonPath -m pip install websockify
 
           $PythonDir = Split-Path $PythonPath
-
-          $Scripts = Join-Path `
-            $PythonDir `
-            "Scripts"
-
-          $Websockify = Join-Path `
-            $Scripts `
-            "websockify.exe"
+          $Scripts = Join-Path $PythonDir "Scripts"
+          $Websockify = Join-Path $Scripts "websockify.exe"
 
           if (!(Test-Path $Websockify)) {
 
@@ -364,7 +421,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host "Installing cloudflared..."
+          Write-Host "============================================"
+          Write-Host "Installing cloudflared"
+          Write-Host "============================================"
 
           $Cloudflared = "C:\cloudflared.exe"
 
@@ -381,8 +440,7 @@ jobs:
 
       # ============================================================
       # START NOVNC + CLOUDFLARE
-      # IMPORTANT:
-      # websockify and cloudflared are started in the SAME STEP.
+      # SAME STEP = IMPORTANT
       # ============================================================
       - name: Start noVNC + Cloudflare and Keep Alive
         shell: powershell
@@ -396,7 +454,6 @@ jobs:
           $VncTarget = "127.0.0.1:5900"
 
           $WebPort = 6080
-
           $Origin = "http://127.0.0.1:6080"
 
           $WebStdout = "C:\websockify.log"
@@ -407,9 +464,9 @@ jobs:
 
           $CfDebug = "C:\cloudflared-debug.log"
 
-          # ----------------------------------------------------------
-          # Cleanup old logs
-          # ----------------------------------------------------------
+          # ==========================================================
+          # CLEAN LOGS
+          # ==========================================================
 
           Remove-Item `
             $WebStdout,
@@ -494,7 +551,6 @@ jobs:
 
                   break
                 }
-
               }
               catch {
 
@@ -519,7 +575,7 @@ jobs:
           }
 
           # ==========================================================
-          # START CLOUDFLARE QUICK TUNNEL
+          # START CLOUDFLARE
           # ==========================================================
 
           Write-Host ""
@@ -606,7 +662,7 @@ jobs:
             }
 
             # --------------------------------------------------------
-            # Find trycloudflare URL
+            # FIND QUICK TUNNEL URL
             # --------------------------------------------------------
 
             if (!$TunnelUrl) {
@@ -622,7 +678,7 @@ jobs:
             }
 
             # --------------------------------------------------------
-            # Check registered connection
+            # CHECK REGISTERED CONNECTION
             # --------------------------------------------------------
 
             if ($Content -match "Registered tunnel connection") {
@@ -672,6 +728,7 @@ jobs:
 
           Write-Host ""
           Write-Host "Waiting for public HTTP..."
+
           Start-Sleep -Seconds 10
 
           $PublicReady = $false
@@ -711,7 +768,7 @@ jobs:
           }
 
           # ==========================================================
-          # SHOW CONNECTION INFORMATION
+          # CONNECTION INFO
           # ==========================================================
 
           Write-Host ""
@@ -774,10 +831,6 @@ jobs:
 
             $Now = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
-            # --------------------------------------------------------
-            # Check websockify
-            # --------------------------------------------------------
-
             if ($WebProcess.HasExited) {
 
               Write-Host "websockify stopped."
@@ -794,10 +847,6 @@ jobs:
 
               throw "websockify stopped."
             }
-
-            # --------------------------------------------------------
-            # Check cloudflared
-            # --------------------------------------------------------
 
             if ($CfProcess.HasExited) {
 
