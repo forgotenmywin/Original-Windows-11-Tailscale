@@ -11,19 +11,19 @@ jobs:
     steps:
 
       # ============================================================
-      # 1. Configure RDP
+      # 1. Configure Windows RDP
       # ============================================================
       - name: Configure RDP
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $Username = "runneradmin"
-          $Password = "WindowsRDP#2025"
-
           Write-Host "============================================"
           Write-Host "Configuring Windows RDP"
           Write-Host "============================================"
+
+          $Username = "runneradmin"
+          $Password = "WindowsRDP#2025"
 
           Set-ItemProperty `
             -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
@@ -51,11 +51,13 @@ jobs:
             -ErrorAction SilentlyContinue
 
           if ($ExistingUser) {
+
               Set-LocalUser `
                 -Name $Username `
                 -Password $SecurePassword
-          }
-          else {
+
+          } else {
+
               New-LocalUser `
                 -Name $Username `
                 -Password $SecurePassword `
@@ -111,6 +113,8 @@ jobs:
           Write-Host "============================================"
 
           $Installer = "$env:TEMP\tightvnc.msi"
+
+          # TightVNC password: maximum 8 characters
           $VncPassword = "MyVNC123"
 
           $Arguments = @(
@@ -189,7 +193,7 @@ jobs:
           Write-Host "TightVNC started."
 
       # ============================================================
-      # 5. Verify TightVNC
+      # 5. Verify VNC
       # ============================================================
       - name: Verify VNC
         shell: powershell
@@ -256,18 +260,23 @@ jobs:
               throw "noVNC installation failed."
           }
 
+          if (!(Test-Path "$NoVncPath\utils\novnc_proxy")) {
+              throw "noVNC novnc_proxy script was not found."
+          }
+
           Write-Host "noVNC installed."
 
       # ============================================================
-      # 7. Install websockify
+      # 7. Install Python
+      #    Git Bash + novnc_proxy will use Python/websockify.
       # ============================================================
-      - name: Install websockify
+      - name: Prepare Python and websockify
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================"
-          Write-Host "Installing websockify"
+          Write-Host "Preparing Python / websockify"
           Write-Host "============================================"
 
           $PythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
@@ -317,64 +326,85 @@ jobs:
           }
 
           "WEBSOCKIFY_EXE=$Websockify" >> $env:GITHUB_ENV
+          "PYTHON_EXE=$PythonPath" >> $env:GITHUB_ENV
 
           Write-Host "websockify: $Websockify"
 
       # ============================================================
-      # 8. Start noVNC / websockify
+      # 8. Start official noVNC novnc_proxy through Git Bash
+      #
+      # noVNC's official novnc_proxy:
+      #   - runs the web server
+      #   - runs the WebSocket proxy
+      #   - serves vnc.html
+      #
+      # We use Git Bash because novnc_proxy is a shell script.
       # ============================================================
-      - name: Start noVNC
+      - name: Start official noVNC proxy
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host "============================================"
-          Write-Host "Starting noVNC"
+          Write-Host "Starting official noVNC proxy"
           Write-Host "============================================"
 
           $NoVncPath = "C:\noVNC"
-          $Websockify = $env:WEBSOCKIFY_EXE
 
-          $Log = "$NoVncPath\websockify.log"
+          $Bash = "C:\Program Files\Git\bin\bash.exe"
+
+          if (!(Test-Path $Bash)) {
+              throw "Git Bash was not found at $Bash"
+          }
+
+          $Stdout = "$NoVncPath\novnc-proxy-stdout.log"
+          $Stderr = "$NoVncPath\novnc-proxy-stderr.log"
 
           Remove-Item `
-              $Log `
+              $Stdout `
               -Force `
               -ErrorAction SilentlyContinue
 
-          Write-Host "websockify:"
-          Write-Host $Websockify
+          Remove-Item `
+              $Stderr `
+              -Force `
+              -ErrorAction SilentlyContinue
 
-          Write-Host ""
-          Write-Host "Starting websockify..."
-          Write-Host ""
+          #
+          # Use the official noVNC helper:
+          #
+          # novnc_proxy
+          #   --vnc 127.0.0.1:5900
+          #   --listen 127.0.0.1:6080
+          #
+          # It starts websockify + the mini web server together.
+          #
 
-          # Explicitly bind the HTTP/WebSocket service to IPv4 localhost.
-          #
-          # 127.0.0.1:6080
-          #       |
-          #       +---- HTTP -> C:\noVNC
-          #       |
-          #       +---- WebSocket -> 127.0.0.1:5900
-          #
+          $Command = @"
+cd /c/noVNC
+export PATH="/c/Program Files/Python312:/c/hostedtoolcache/windows/Python/3.12.10/x64:/c/hostedtoolcache/windows/Python/3.12.10/x64/Scripts:`$PATH"
+bash ./utils/novnc_proxy --vnc 127.0.0.1:5900 --listen 127.0.0.1:6080 --file-only
+"@
+
+          Write-Host "Starting Git Bash noVNC proxy..."
+
           Start-Process `
-              -FilePath $Websockify `
+              -FilePath $Bash `
               -ArgumentList @(
-                  "--web"
-                  $NoVncPath
-                  "--verbose"
-                  "127.0.0.1:6080"
-                  "127.0.0.1:5900"
+                  "--noprofile"
+                  "--norc"
+                  "-lc"
+                  $Command
               ) `
               -WorkingDirectory $NoVncPath `
-              -RedirectStandardOutput $Log `
-              -RedirectStandardError "$NoVncPath\websockify-error.log" `
+              -RedirectStandardOutput $Stdout `
+              -RedirectStandardError $Stderr `
               -WindowStyle Hidden
 
-          Start-Sleep -Seconds 5
+          Start-Sleep -Seconds 6
 
           # --------------------------------------------------------
-          # Check TCP
+          # TCP test
           # --------------------------------------------------------
 
           $TcpReady = $false
@@ -388,14 +418,13 @@ jobs:
 
               if ($Result.TcpTestSucceeded) {
 
-                  Write-Host ""
-                  Write-Host "TCP 6080 is listening."
+                  Write-Host "noVNC proxy is listening on 127.0.0.1:6080"
 
                   $TcpReady = $true
                   break
               }
 
-              Write-Host "Waiting for TCP 6080... $i/30"
+              Write-Host "Waiting for noVNC proxy... $i/30"
 
               Start-Sleep -Seconds 2
           }
@@ -403,34 +432,31 @@ jobs:
           if (!$TcpReady) {
 
               Write-Host ""
-              Write-Host "========== websockify stdout =========="
+              Write-Host "========== noVNC proxy stdout =========="
 
-              if (Test-Path $Log) {
-                  Get-Content $Log
+              if (Test-Path $Stdout) {
+                  Get-Content $Stdout
               }
 
               Write-Host ""
-              Write-Host "========== websockify stderr =========="
+              Write-Host "========== noVNC proxy stderr =========="
 
-              if (Test-Path "$NoVncPath\websockify-error.log") {
-                  Get-Content "$NoVncPath\websockify-error.log"
+              if (Test-Path $Stderr) {
+                  Get-Content $Stderr
               }
 
-              throw "websockify did not open TCP port 6080."
+              throw "noVNC proxy did not open port 6080."
           }
 
           # --------------------------------------------------------
-          # Check actual HTTP.
-          # This is the important test for the Cloudflare 502 issue.
+          # Actual HTTP test
           # --------------------------------------------------------
 
           Write-Host ""
-          Write-Host "Testing local HTTP:"
-          Write-Host "http://127.0.0.1:6080/vnc.html"
+          Write-Host "Testing local noVNC HTTP..."
           Write-Host ""
 
           $HttpReady = $false
-          $LastHttpError = ""
 
           for ($i = 1; $i -le 20; $i++) {
 
@@ -439,10 +465,9 @@ jobs:
                   $Response = Invoke-WebRequest `
                       -Uri "http://127.0.0.1:6080/vnc.html" `
                       -UseBasicParsing `
-                      -TimeoutSec 10 `
-                      -MaximumRedirection 5
+                      -TimeoutSec 10
 
-                  Write-Host "HTTP status: $($Response.StatusCode)"
+                  Write-Host "Local HTTP status: $($Response.StatusCode)"
 
                   if ($Response.StatusCode -eq 200) {
 
@@ -454,12 +479,12 @@ jobs:
                           break
                       }
                   }
+
               }
               catch {
 
-                  $LastHttpError = $_.Exception.Message
-
-                  Write-Host "HTTP test failed: $LastHttpError"
+                  Write-Host "Local HTTP failed:"
+                  Write-Host $_.Exception.Message
               }
 
               Start-Sleep -Seconds 2
@@ -468,41 +493,29 @@ jobs:
           if (!$HttpReady) {
 
               Write-Host ""
-              Write-Host "============================================"
-              Write-Host "LOCAL HTTP TEST FAILED"
-              Write-Host "============================================"
-              Write-Host ""
+              Write-Host "========== noVNC proxy stdout =========="
 
-              if ($LastHttpError) {
-                  Write-Host "Last error:"
-                  Write-Host $LastHttpError
-                  Write-Host ""
-              }
-
-              Write-Host "========== websockify stdout =========="
-
-              if (Test-Path $Log) {
-                  Get-Content $Log
+              if (Test-Path $Stdout) {
+                  Get-Content $Stdout
               }
 
               Write-Host ""
-              Write-Host "========== websockify stderr =========="
+              Write-Host "========== noVNC proxy stderr =========="
 
-              if (Test-Path "$NoVncPath\websockify-error.log") {
-                  Get-Content "$NoVncPath\websockify-error.log"
+              if (Test-Path $Stderr) {
+                  Get-Content $Stderr
               }
 
-              throw "Port 6080 is open, but /vnc.html is not being served."
+              throw "noVNC proxy is listening but /vnc.html did not return HTTP 200."
           }
 
           Write-Host ""
           Write-Host "============================================"
-          Write-Host "LOCAL noVNC HTTP TEST PASSED"
+          Write-Host "LOCAL noVNC TEST PASSED"
           Write-Host "============================================"
-          Write-Host ""
 
       # ============================================================
-      # 9. Download cloudflared
+      # 9. Install cloudflared
       # ============================================================
       - name: Install cloudflared
         shell: powershell
@@ -524,22 +537,20 @@ jobs:
               throw "cloudflared download failed."
           }
 
-          Write-Host "cloudflared version:"
           & $Cloudflared version
 
       # ============================================================
-      # 10. Cloudflare connectivity diagnostics
+      # 10. Cloudflare connectivity test
       # ============================================================
       - name: Diagnose Cloudflare connectivity
         shell: powershell
         run: |
           Write-Host ""
           Write-Host "============================================"
-          Write-Host "Cloudflare connectivity test"
+          Write-Host "Cloudflare connectivity"
           Write-Host "============================================"
           Write-Host ""
 
-          Write-Host "DNS:"
           Resolve-DnsName `
               region1.v2.argotunnel.com `
               -ErrorAction SilentlyContinue |
@@ -548,20 +559,15 @@ jobs:
           Write-Host ""
           Write-Host "TCP 7844:"
 
-          $TcpResult = Test-NetConnection `
+          $Tcp = Test-NetConnection `
               region1.v2.argotunnel.com `
               -Port 7844 `
               -WarningAction SilentlyContinue
 
-          $TcpResult |
-              Format-List
+          $Tcp | Format-List
 
-          Write-Host ""
-
-          if ($TcpResult.TcpTestSucceeded) {
-              Write-Host "TCP 7844 is reachable."
-          }
-          else {
+          if (!$Tcp.TcpTestSucceeded) {
+              Write-Host ""
               Write-Host "WARNING: TCP 7844 is not reachable."
           }
 
@@ -578,6 +584,7 @@ jobs:
 
           $Stdout = "C:\cloudflared-stdout.log"
           $Stderr = "C:\cloudflared-stderr.log"
+          $DebugLog = "C:\cloudflared-debug.log"
 
           Remove-Item `
               $Stdout `
@@ -589,17 +596,26 @@ jobs:
               -Force `
               -ErrorAction SilentlyContinue
 
+          Remove-Item `
+              $DebugLog `
+              -Force `
+              -ErrorAction SilentlyContinue
+
           Write-Host ""
           Write-Host "============================================"
           Write-Host "Starting Cloudflare Quick Tunnel"
           Write-Host "============================================"
           Write-Host ""
-          Write-Host "Origin:"
-          Write-Host $Origin
+          Write-Host "Origin: $Origin"
           Write-Host ""
-          Write-Host "Protocol: auto"
-          Write-Host "Edge IP version: IPv4"
-          Write-Host ""
+
+          #
+          # Important:
+          # - No --http-host-header override
+          # - IPv4 edge
+          # - automatic QUIC/HTTP2 selection
+          # - DEBUG log retained for real 502 diagnosis
+          #
 
           $TunnelProcess = Start-Process `
               -FilePath $Cloudflared `
@@ -610,8 +626,10 @@ jobs:
                   "auto"
                   "--edge-ip-version"
                   "4"
-                  "--http-host-header"
-                  "127.0.0.1:6080"
+                  "--loglevel"
+                  "debug"
+                  "--logfile"
+                  $DebugLog
                   "--url"
                   $Origin
               ) `
@@ -659,6 +677,15 @@ jobs:
                   )
               }
 
+              if (Test-Path $DebugLog) {
+                  $Content += "`n" + (
+                      Get-Content `
+                          $DebugLog `
+                          -Raw `
+                          -ErrorAction SilentlyContinue
+                  )
+              }
+
               if (!$TunnelUrl) {
 
                   $Match = [regex]::Match(
@@ -684,36 +711,47 @@ jobs:
                   break
               }
 
-              Write-Host "Waiting for Cloudflare edge connection... $i/90"
-          }
-
-          Write-Host ""
-          Write-Host "============================================"
-          Write-Host "cloudflared output"
-          Write-Host "============================================"
-          Write-Host ""
-
-          if (Test-Path $Stdout) {
-
-              Write-Host "---------- STDOUT ----------"
-
-              Get-Content $Stdout
-          }
-
-          if (Test-Path $Stderr) {
-
-              Write-Host ""
-              Write-Host "---------- STDERR ----------"
-
-              Get-Content $Stderr
+              Write-Host "Waiting for Cloudflare edge... $i/90"
           }
 
           if (!$TunnelUrl) {
-              throw "Cloudflare did not create a Quick Tunnel URL."
+
+              Write-Host ""
+              Write-Host "========== cloudflared stdout =========="
+
+              Get-Content `
+                  $Stdout `
+                  -ErrorAction SilentlyContinue
+
+              Write-Host ""
+              Write-Host "========== cloudflared stderr =========="
+
+              Get-Content `
+                  $Stderr `
+                  -ErrorAction SilentlyContinue
+
+              Write-Host ""
+              Write-Host "========== cloudflared debug =========="
+
+              Get-Content `
+                  $DebugLog `
+                  -Tail 150 `
+                  -ErrorAction SilentlyContinue
+
+              throw "Cloudflare Quick Tunnel URL was not created."
           }
 
           if (!$Registered) {
-              throw "Cloudflare created a URL but no tunnel connection was registered."
+
+              Write-Host ""
+              Write-Host "========== cloudflared debug =========="
+
+              Get-Content `
+                  $DebugLog `
+                  -Tail 150 `
+                  -ErrorAction SilentlyContinue
+
+              throw "Cloudflare Quick Tunnel URL was created, but the tunnel connection was not registered."
           }
 
           $NoVncUrl = "$TunnelUrl/vnc.html"
@@ -740,7 +778,14 @@ jobs:
           Write-Host ""
 
           # --------------------------------------------------------
-          # Verify the public HTTP endpoint.
+          # Wait briefly for the Quick Tunnel hostname to propagate.
+          # Cloudflare says it may take some time to become reachable.
+          # --------------------------------------------------------
+
+          Start-Sleep -Seconds 8
+
+          # --------------------------------------------------------
+          # Public HTTP test
           # --------------------------------------------------------
 
           Write-Host ""
@@ -748,7 +793,8 @@ jobs:
           Write-Host ""
 
           $PublicReady = $false
-          $LastPublicError = ""
+          $LastStatus = $null
+          $LastError = ""
 
           for ($i = 1; $i -le 20; $i++) {
 
@@ -760,19 +806,22 @@ jobs:
                       -TimeoutSec 15 `
                       -MaximumRedirection 5
 
-                  Write-Host "Public HTTP status: $($Response.StatusCode)"
+                  $LastStatus = [int]$Response.StatusCode
 
-                  if ($Response.StatusCode -eq 200) {
+                  Write-Host "Public HTTP status: $LastStatus"
+
+                  if ($LastStatus -eq 200) {
                       $PublicReady = $true
                       break
                   }
+
               }
               catch {
 
-                  $LastPublicError = $_.Exception.Message
+                  $LastError = $_.Exception.Message
 
-                  Write-Host "Public HTTP test failed:"
-                  Write-Host $LastPublicError
+                  Write-Host "Public request failed:"
+                  Write-Host $LastError
               }
 
               Start-Sleep -Seconds 3
@@ -782,7 +831,7 @@ jobs:
 
               Write-Host ""
               Write-Host "============================================================"
-              Write-Host "PUBLIC noVNC TEST FAILED"
+              Write-Host "                 PUBLIC TEST FAILED"
               Write-Host "============================================================"
               Write-Host ""
 
@@ -790,37 +839,50 @@ jobs:
               Write-Host $NoVncUrl
               Write-Host ""
 
-              Write-Host "Last error:"
-              Write-Host $LastPublicError
+              Write-Host "Last HTTP status:"
+              Write-Host $LastStatus
               Write-Host ""
 
-              Write-Host "The tunnel is connected, but the origin request failed."
+              Write-Host "Last request error:"
+              Write-Host $LastError
               Write-Host ""
 
-              Write-Host "========== websockify stdout =========="
+              Write-Host "============================================================"
+              Write-Host "                    DEBUG LOG"
+              Write-Host "============================================================"
+              Write-Host ""
 
-              if (Test-Path "C:\noVNC\websockify.log") {
-                  Get-Content "C:\noVNC\websockify.log"
+              if (Test-Path $DebugLog) {
+                  Get-Content `
+                      $DebugLog `
+                      -Tail 250
               }
 
               Write-Host ""
-              Write-Host "========== websockify stderr =========="
+              Write-Host "============================================================"
+              Write-Host "                 noVNC PROXY LOG"
+              Write-Host "============================================================"
+              Write-Host ""
 
-              if (Test-Path "C:\noVNC\websockify-error.log") {
-                  Get-Content "C:\noVNC\websockify-error.log"
+              if (Test-Path "C:\noVNC\novnc-proxy-stdout.log") {
+                  Get-Content `
+                      "C:\noVNC\novnc-proxy-stdout.log" `
+                      -Tail 150
               }
 
               Write-Host ""
-              Write-Host "========== cloudflared stdout =========="
-
-              Get-Content $Stdout -ErrorAction SilentlyContinue
-
+              Write-Host "============================================================"
+              Write-Host "                noVNC PROXY ERRORS"
+              Write-Host "============================================================"
               Write-Host ""
-              Write-Host "========== cloudflared stderr =========="
 
-              Get-Content $Stderr -ErrorAction SilentlyContinue
+              if (Test-Path "C:\noVNC\novnc-proxy-stderr.log") {
+                  Get-Content `
+                      "C:\noVNC\novnc-proxy-stderr.log" `
+                      -Tail 150
+              }
 
-              throw "Cloudflare tunnel is connected, but public noVNC returned no HTTP 200."
+              throw "Public noVNC endpoint did not return HTTP 200."
           }
 
           Write-Host ""
@@ -828,9 +890,11 @@ jobs:
           Write-Host "             PUBLIC noVNC TEST PASSED"
           Write-Host "============================================================"
           Write-Host ""
+          Write-Host $NoVncUrl
+          Write-Host ""
 
           # --------------------------------------------------------
-          # Keep runner + VNC + websockify + cloudflared alive.
+          # Keep the Windows session, VNC, noVNC and cloudflared alive.
           # --------------------------------------------------------
 
           while ($true) {
@@ -845,12 +909,13 @@ jobs:
                   Write-Host "cloudflared stopped at $Now."
                   Write-Host ""
 
-                  Write-Host "========== cloudflared stdout =========="
-                  Get-Content $Stdout -ErrorAction SilentlyContinue
+                  Write-Host "========== cloudflared debug =========="
 
-                  Write-Host ""
-                  Write-Host "========== cloudflared stderr =========="
-                  Get-Content $Stderr -ErrorAction SilentlyContinue
+                  if (Test-Path $DebugLog) {
+                      Get-Content `
+                          $DebugLog `
+                          -Tail 250
+                  }
 
                   throw "cloudflared stopped while the session was active."
               }
