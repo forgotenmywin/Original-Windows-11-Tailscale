@@ -1,4 +1,3 @@
-```yaml
 name: Windows 11 - RDP + noVNC + Cloudflare
 
 on:
@@ -627,4 +626,3 @@ jobs:
 
             Start-Sleep -Seconds 300
           }
-```
