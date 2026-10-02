@@ -1,4 +1,4 @@
-name: Windows 11 - noVNC + Cloudflare
+name: Windows 11 - RDP + noVNC + Cloudflare
 
 on:
   workflow_dispatch:
@@ -18,12 +18,12 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
+          Write-Host "============================================"
+          Write-Host "Configuring Windows RDP"
+          Write-Host "============================================"
+
           $Username = "runneradmin"
           $Password = "WindowsRDP#2025"
-
-          Write-Host "============================================"
-          Write-Host "Configuring RDP"
-          Write-Host "============================================"
 
           Set-ItemProperty `
             -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
@@ -46,21 +46,21 @@ jobs:
             -AsPlainText `
             -Force
 
-          $Existing = Get-LocalUser `
+          $ExistingUser = Get-LocalUser `
             -Name $Username `
             -ErrorAction SilentlyContinue
 
-          if ($Existing) {
-            Set-LocalUser `
-              -Name $Username `
-              -Password $SecurePassword
+          if ($ExistingUser) {
+              Set-LocalUser `
+                -Name $Username `
+                -Password $SecurePassword
           }
           else {
-            New-LocalUser `
-              -Name $Username `
-              -Password $SecurePassword `
-              -PasswordNeverExpires `
-              -AccountNeverExpires
+              New-LocalUser `
+                -Name $Username `
+                -Password $SecurePassword `
+                -PasswordNeverExpires `
+                -AccountNeverExpires
           }
 
           Add-LocalGroupMember `
@@ -74,7 +74,32 @@ jobs:
           Write-Host "RDP configured."
 
       # ============================================================
-      # 2. TightVNC
+      # 2. Download TightVNC
+      # ============================================================
+      - name: Download TightVNC
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================"
+          Write-Host "Downloading TightVNC"
+          Write-Host "============================================"
+
+          $Installer = "$env:TEMP\tightvnc.msi"
+
+          Invoke-WebRequest `
+            -Uri "https://www.tightvnc.com/download/2.8.81/tightvnc-2.8.81-gpl-setup-64bit.msi" `
+            -OutFile $Installer `
+            -UseBasicParsing
+
+          if (!(Test-Path $Installer)) {
+              throw "TightVNC installer was not downloaded."
+          }
+
+          Write-Host "TightVNC downloaded."
+
+      # ============================================================
+      # 3. Install TightVNC
       # ============================================================
       - name: Install TightVNC
         shell: powershell
@@ -86,56 +111,53 @@ jobs:
           Write-Host "============================================"
 
           $Installer = "$env:TEMP\tightvnc.msi"
-
-          Invoke-WebRequest `
-            -Uri "https://www.tightvnc.com/download/2.8.81/tightvnc-2.8.81-gpl-setup-64bit.msi" `
-            -OutFile $Installer `
-            -UseBasicParsing
-
-          if (!(Test-Path $Installer)) {
-            throw "TightVNC installer not found."
-          }
-
           $VncPassword = "MyVNC123"
 
           $Arguments = @(
-            "/i"
-            "`"$Installer`""
-            "/quiet"
-            "/norestart"
-            "ADDLOCAL=Server"
-            "SERVER_REGISTER_AS_SERVICE=1"
-            "SERVER_ADD_FIREWALL_EXCEPTION=1"
-            "SET_ACCEPTRFBCONNECTIONS=1"
-            "VALUE_OF_ACCEPTRFBCONNECTIONS=1"
-            "SET_USEVNCAUTHENTICATION=1"
-            "VALUE_OF_USEVNCAUTHENTICATION=1"
-            "SET_PASSWORD=1"
-            "VALUE_OF_PASSWORD=$VncPassword"
+              "/i"
+              "`"$Installer`""
+              "/quiet"
+              "/norestart"
+              "ADDLOCAL=Server"
+              "SERVER_REGISTER_AS_SERVICE=1"
+              "SERVER_ADD_FIREWALL_EXCEPTION=1"
+              "SET_ACCEPTRFBCONNECTIONS=1"
+              "VALUE_OF_ACCEPTRFBCONNECTIONS=1"
+              "SET_USEVNCAUTHENTICATION=1"
+              "VALUE_OF_USEVNCAUTHENTICATION=1"
+              "SET_PASSWORD=1"
+              "VALUE_OF_PASSWORD=$VncPassword"
           )
 
           $Process = Start-Process `
-            -FilePath "msiexec.exe" `
-            -ArgumentList $Arguments `
-            -Wait `
-            -PassThru `
-            -NoNewWindow
+              -FilePath "msiexec.exe" `
+              -ArgumentList $Arguments `
+              -Wait `
+              -PassThru `
+              -NoNewWindow
 
           if ($Process.ExitCode -ne 0) {
-            throw "TightVNC installation failed: $($Process.ExitCode)"
+              throw "TightVNC installation failed with exit code $($Process.ExitCode)."
           }
 
           Write-Host "TightVNC installed."
 
+      # ============================================================
+      # 4. Start TightVNC
+      # ============================================================
       - name: Start TightVNC
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
+          Write-Host "============================================"
+          Write-Host "Starting TightVNC"
+          Write-Host "============================================"
+
           $VncExe = "C:\Program Files\TightVNC\tvnserver.exe"
 
           if (!(Test-Path $VncExe)) {
-            throw "TightVNC executable not found."
+              throw "TightVNC executable was not found."
           }
 
           & $VncExe -install -silent 2>$null
@@ -147,133 +169,165 @@ jobs:
           Start-Sleep -Seconds 5
 
           $Service = Get-Service `
-            -Name "tvnserver" `
-            -ErrorAction SilentlyContinue
-
-          if ($Service -and $Service.Status -ne "Running") {
-            Start-Service `
               -Name "tvnserver" `
               -ErrorAction SilentlyContinue
 
-            Start-Sleep -Seconds 3
+          if ($Service) {
+
+              Write-Host "TightVNC service: $($Service.Status)"
+
+              if ($Service.Status -ne "Running") {
+
+                  Start-Service `
+                      -Name "tvnserver" `
+                      -ErrorAction SilentlyContinue
+
+                  Start-Sleep -Seconds 3
+              }
           }
 
-          Write-Host "TightVNC service:"
-          Get-Service `
-            -Name "tvnserver" `
-            -ErrorAction SilentlyContinue |
-            Format-Table -AutoSize
+          Write-Host "TightVNC started."
 
+      # ============================================================
+      # 5. Verify VNC
+      # ============================================================
       - name: Verify VNC
         shell: powershell
         run: |
+          Write-Host "============================================"
+          Write-Host "Checking VNC port 5900"
+          Write-Host "============================================"
+
           $Ready = $false
 
           for ($i = 1; $i -le 30; $i++) {
 
-            $Result = Test-NetConnection `
-              -ComputerName "127.0.0.1" `
-              -Port 5900 `
-              -WarningAction SilentlyContinue
+              $Result = Test-NetConnection `
+                  -ComputerName "127.0.0.1" `
+                  -Port 5900 `
+                  -WarningAction SilentlyContinue
 
-            if ($Result.TcpTestSucceeded) {
-              Write-Host "VNC is listening on 127.0.0.1:5900"
-              $Ready = $true
-              break
-            }
+              if ($Result.TcpTestSucceeded) {
 
-            Write-Host "Waiting for VNC... $i/30"
-            Start-Sleep -Seconds 2
+                  Write-Host "VNC is listening on 127.0.0.1:5900"
+
+                  $Ready = $true
+                  break
+              }
+
+              Write-Host "Waiting for VNC... $i/30"
+              Start-Sleep -Seconds 2
           }
 
           if (!$Ready) {
-            throw "VNC port 5900 did not open."
+              throw "VNC server is not listening on port 5900."
           }
 
       # ============================================================
-      # 3. noVNC
+      # 6. Download noVNC
       # ============================================================
       - name: Install noVNC
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
+          Write-Host "============================================"
+          Write-Host "Downloading noVNC"
+          Write-Host "============================================"
+
           $NoVncPath = "C:\noVNC"
 
           if (Test-Path $NoVncPath) {
-            Remove-Item `
-              $NoVncPath `
-              -Recurse `
-              -Force
+              Remove-Item `
+                  $NoVncPath `
+                  -Recurse `
+                  -Force
           }
 
           git clone `
-            --depth 1 `
-            https://github.com/novnc/noVNC.git `
-            $NoVncPath
+              --depth 1 `
+              https://github.com/novnc/noVNC.git `
+              $NoVncPath
 
           if (!(Test-Path "$NoVncPath\vnc.html")) {
-            throw "noVNC installation failed."
+              throw "noVNC installation failed."
           }
 
           Write-Host "noVNC installed."
 
       # ============================================================
-      # 4. websockify
+      # 7. Install websockify
       # ============================================================
       - name: Install websockify
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $Python = Get-Command python.exe -ErrorAction SilentlyContinue
+          Write-Host "============================================"
+          Write-Host "Installing websockify"
+          Write-Host "============================================"
 
-          if (!$Python) {
-            winget install `
-              --id Python.Python.3.12 `
-              --exact `
-              --silent `
-              --accept-package-agreements `
-              --accept-source-agreements
+          $PythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
 
-            Start-Sleep -Seconds 5
+          if (!$PythonCommand) {
+
+              Write-Host "Python not found. Installing Python 3.12."
+
+              winget install `
+                  --id Python.Python.3.12 `
+                  --exact `
+                  --silent `
+                  --accept-package-agreements `
+                  --accept-source-agreements
+
+              Start-Sleep -Seconds 5
           }
 
-          $Python = Get-Command python.exe -ErrorAction SilentlyContinue
+          $PythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
 
-          if (!$Python) {
-            throw "Python not found."
+          if (!$PythonCommand) {
+              throw "Python was not found."
           }
 
-          $PythonPath = $Python.Source
+          $PythonPath = $PythonCommand.Source
+
+          Write-Host "Python: $PythonPath"
 
           & $PythonPath -m pip install --upgrade pip
           & $PythonPath -m pip install websockify
 
-          $PythonDir = Split-Path $PythonPath
-          $ScriptsDir = Join-Path $PythonDir "Scripts"
-          $Websockify = Join-Path $ScriptsDir "websockify.exe"
+          $PythonDirectory = Split-Path $PythonPath
+          $ScriptsDirectory = Join-Path $PythonDirectory "Scripts"
+          $Websockify = Join-Path $ScriptsDirectory "websockify.exe"
 
           if (!(Test-Path $Websockify)) {
-            $Command = Get-Command `
-              websockify.exe `
-              -ErrorAction SilentlyContinue
 
-            if (!$Command) {
-              throw "websockify.exe not found."
-            }
+              $WebsockifyCommand = Get-Command `
+                  websockify.exe `
+                  -ErrorAction SilentlyContinue
 
-            $Websockify = $Command.Source
+              if (!$WebsockifyCommand) {
+                  throw "websockify.exe was not found."
+              }
+
+              $Websockify = $WebsockifyCommand.Source
           }
 
           "WEBSOCKIFY_EXE=$Websockify" >> $env:GITHUB_ENV
 
           Write-Host "websockify: $Websockify"
 
+      # ============================================================
+      # 8. Start noVNC
+      # ============================================================
       - name: Start noVNC
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
+
+          Write-Host "============================================"
+          Write-Host "Starting noVNC"
+          Write-Host "============================================"
 
           $NoVncPath = "C:\noVNC"
           $Websockify = $env:WEBSOCKIFY_EXE
@@ -281,21 +335,30 @@ jobs:
           $Stdout = "$NoVncPath\websockify-stdout.log"
           $Stderr = "$NoVncPath\websockify-stderr.log"
 
-          Remove-Item $Stdout -Force -ErrorAction SilentlyContinue
-          Remove-Item $Stderr -Force -ErrorAction SilentlyContinue
+          Remove-Item `
+              $Stdout `
+              -Force `
+              -ErrorAction SilentlyContinue
 
-          Start-Process `
-            -FilePath $Websockify `
-            -ArgumentList @(
+          Remove-Item `
+              $Stderr `
+              -Force `
+              -ErrorAction SilentlyContinue
+
+          $Arguments = @(
               "--web"
               $NoVncPath
               "6080"
               "127.0.0.1:5900"
-            ) `
-            -WorkingDirectory $NoVncPath `
-            -RedirectStandardOutput $Stdout `
-            -RedirectStandardError $Stderr `
-            -WindowStyle Hidden
+          )
+
+          Start-Process `
+              -FilePath $Websockify `
+              -ArgumentList $Arguments `
+              -WorkingDirectory $NoVncPath `
+              -RedirectStandardOutput $Stdout `
+              -RedirectStandardError $Stderr `
+              -WindowStyle Hidden
 
           Start-Sleep -Seconds 5
 
@@ -303,98 +366,102 @@ jobs:
 
           for ($i = 1; $i -le 30; $i++) {
 
-            $Result = Test-NetConnection `
-              -ComputerName "127.0.0.1" `
-              -Port 6080 `
-              -WarningAction SilentlyContinue
+              $Result = Test-NetConnection `
+                  -ComputerName "127.0.0.1" `
+                  -Port 6080 `
+                  -WarningAction SilentlyContinue
 
-            if ($Result.TcpTestSucceeded) {
-              Write-Host "noVNC/websockify is listening on 127.0.0.1:6080"
-              $Ready = $true
-              break
-            }
+              if ($Result.TcpTestSucceeded) {
 
-            Write-Host "Waiting for noVNC... $i/30"
-            Start-Sleep -Seconds 2
+                  Write-Host "noVNC/websockify is listening on 127.0.0.1:6080"
+
+                  $Ready = $true
+                  break
+              }
+
+              Write-Host "Waiting for noVNC... $i/30"
+              Start-Sleep -Seconds 2
           }
 
           if (!$Ready) {
 
-            Write-Host "========== websockify stdout =========="
+              Write-Host "========== websockify stdout =========="
 
-            if (Test-Path $Stdout) {
-              Get-Content $Stdout
-            }
+              if (Test-Path $Stdout) {
+                  Get-Content $Stdout
+              }
 
-            Write-Host "========== websockify stderr =========="
+              Write-Host "========== websockify stderr =========="
 
-            if (Test-Path $Stderr) {
-              Get-Content $Stderr
-            }
+              if (Test-Path $Stderr) {
+                  Get-Content $Stderr
+              }
 
-            throw "noVNC did not start."
+              throw "noVNC/websockify failed to start."
           }
 
       # ============================================================
-      # 5. cloudflared
+      # 9. Install cloudflared
       # ============================================================
       - name: Install cloudflared
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
+          Write-Host "============================================"
+          Write-Host "Downloading cloudflared"
+          Write-Host "============================================"
+
           $Cloudflared = "C:\cloudflared.exe"
 
           Invoke-WebRequest `
-            -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" `
-            -OutFile $Cloudflared `
-            -UseBasicParsing
+              -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" `
+              -OutFile $Cloudflared `
+              -UseBasicParsing
 
           if (!(Test-Path $Cloudflared)) {
-            throw "cloudflared download failed."
+              throw "cloudflared download failed."
           }
 
+          Write-Host "cloudflared version:"
           & $Cloudflared version
 
       # ============================================================
-      # 6. Test Cloudflare edge connectivity
+      # 10. Diagnose Cloudflare connectivity
       # ============================================================
       - name: Diagnose Cloudflare connectivity
         shell: powershell
         run: |
           Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "             CLOUDFLARE CONNECTIVITY TEST"
-          Write-Host "============================================================"
-
+          Write-Host "============================================"
+          Write-Host "Cloudflare connectivity test"
+          Write-Host "============================================"
           Write-Host ""
-          Write-Host "DNS:"
+
+          Write-Host "DNS lookup:"
           Resolve-DnsName `
-            region1.v2.argotunnel.com `
-            -ErrorAction SilentlyContinue |
-            Format-Table -AutoSize
+              region1.v2.argotunnel.com `
+              -ErrorAction SilentlyContinue |
+              Format-Table -AutoSize
 
           Write-Host ""
           Write-Host "TCP 7844:"
-          Test-NetConnection `
-            region1.v2.argotunnel.com `
-            -Port 7844 `
-            -WarningAction SilentlyContinue |
-            Format-List
+          $TcpResult = Test-NetConnection `
+              region1.v2.argotunnel.com `
+              -Port 7844 `
+              -WarningAction SilentlyContinue
 
-          Write-Host ""
-          Write-Host "HTTPS 7844 test:"
+          $TcpResult |
+              Format-List
 
-          curl.exe `
-            -4 `
-            -vk `
-            --connect-timeout 10 `
-            --max-time 15 `
-            "https://region1.v2.argotunnel.com:7844" 2>&1 |
-            Select-Object -First 40
+          if (!$TcpResult.TcpTestSucceeded) {
+              Write-Host ""
+              Write-Host "WARNING: TCP 7844 is not reachable."
+              Write-Host "cloudflared may not be able to connect to Cloudflare."
+          }
 
       # ============================================================
-      # 7. Start Quick Tunnel and keep alive
+      # 11. Start Quick Tunnel and keep everything alive
       # ============================================================
       - name: Start Quick Tunnel and Keep Alive
         shell: powershell
@@ -407,131 +474,141 @@ jobs:
           $Stdout = "C:\cloudflared-stdout.log"
           $Stderr = "C:\cloudflared-stderr.log"
 
-          Remove-Item $Stdout -Force -ErrorAction SilentlyContinue
-          Remove-Item $Stderr -Force -ErrorAction SilentlyContinue
+          Remove-Item `
+              $Stdout `
+              -Force `
+              -ErrorAction SilentlyContinue
+
+          Remove-Item `
+              $Stderr `
+              -Force `
+              -ErrorAction SilentlyContinue
 
           Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "             STARTING QUICK TUNNEL"
-          Write-Host "============================================================"
+          Write-Host "============================================"
+          Write-Host "Starting Cloudflare Quick Tunnel"
+          Write-Host "============================================"
+          Write-Host ""
+          Write-Host "Origin:"
+          Write-Host $Target
+          Write-Host ""
+          Write-Host "Protocol: auto"
+          Write-Host "IPv4: forced"
           Write-Host ""
 
           $TunnelProcess = Start-Process `
-            -FilePath $Cloudflared `
-            -ArgumentList @(
-              "tunnel"
-              "--no-autoupdate"
-              "--protocol"
-              "auto"
-              "--edge-ip-version"
-              "4"
-              "--url"
-              $Target
-            ) `
-            -RedirectStandardOutput $Stdout `
-            -RedirectStandardError $Stderr `
-            -WindowStyle Hidden `
-            -PassThru
+              -FilePath $Cloudflared `
+              -ArgumentList @(
+                  "tunnel"
+                  "--no-autoupdate"
+                  "--protocol"
+                  "auto"
+                  "--edge-ip-version"
+                  "4"
+                  "--url"
+                  $Target
+              ) `
+              -RedirectStandardOutput $Stdout `
+              -RedirectStandardError $Stderr `
+              -WindowStyle Hidden `
+              -PassThru
 
           Write-Host "cloudflared PID: $($TunnelProcess.Id)"
           Write-Host ""
 
-          $Url = $null
-          $Connected = $false
+          $TunnelUrl = $null
+          $Registered = $false
 
           for ($i = 1; $i -le 90; $i++) {
 
-            Start-Sleep -Seconds 2
+              Start-Sleep -Seconds 2
 
-            if ($TunnelProcess.HasExited) {
-              Write-Host "cloudflared exited with code $($TunnelProcess.ExitCode)."
-              break
-            }
+              if ($TunnelProcess.HasExited) {
 
-            $Content = ""
-
-            if (Test-Path $Stdout) {
-              $Content += "`n" + (
-                Get-Content `
-                  $Stdout `
-                  -Raw `
-                  -ErrorAction SilentlyContinue
-              )
-            }
-
-            if (Test-Path $Stderr) {
-              $Content += "`n" + (
-                Get-Content `
-                  $Stderr `
-                  -Raw `
-                  -ErrorAction SilentlyContinue
-              )
-            }
-
-            if (!$Url) {
-
-              $Match = [regex]::Match(
-                $Content,
-                'https://[a-zA-Z0-9-]+\.trycloudflare\.com'
-              )
-
-              if ($Match.Success) {
-                $Url = $Match.Value
+                  Write-Host ""
+                  Write-Host "cloudflared exited."
+                  Write-Host "Exit code: $($TunnelProcess.ExitCode)"
+                  break
               }
-            }
 
-            # This is more important than merely receiving the URL.
-            if (
-              $Content -match "Registered tunnel connection" -or
-              $Content -match "Registered tunnel connection connIndex"
-            ) {
-              $Connected = $true
-            }
+              $Content = ""
 
-            if ($Url) {
-              Write-Host "Quick Tunnel URL detected: $Url"
-            }
+              if (Test-Path $Stdout) {
+                  $Content += "`n" + (
+                      Get-Content `
+                          $Stdout `
+                          -Raw `
+                          -ErrorAction SilentlyContinue
+                  )
+              }
 
-            if ($Connected) {
-              Write-Host "Cloudflare tunnel connection registered."
-              break
-            }
+              if (Test-Path $Stderr) {
+                  $Content += "`n" + (
+                      Get-Content `
+                          $Stderr `
+                          -Raw `
+                          -ErrorAction SilentlyContinue
+                  )
+              }
 
-            Write-Host "Waiting for Cloudflare connection... $i/90"
+              if (!$TunnelUrl) {
+
+                  $UrlMatch = [regex]::Match(
+                      $Content,
+                      'https://[a-zA-Z0-9-]+\.trycloudflare\.com'
+                  )
+
+                  if ($UrlMatch.Success) {
+                      $TunnelUrl = $UrlMatch.Value
+                  }
+              }
+
+              if (
+                  $Content -match "Registered tunnel connection"
+              ) {
+                  $Registered = $true
+              }
+
+              if ($TunnelUrl) {
+                  Write-Host "Tunnel URL detected: $TunnelUrl"
+              }
+
+              if ($Registered) {
+                  Write-Host "Cloudflare tunnel connection registered."
+                  break
+              }
+
+              Write-Host "Waiting for Cloudflare edge connection... $i/90"
           }
 
           Write-Host ""
-          Write-Host "============================================================"
-          Write-Host "                 CLOUDFLARE LOGS"
-          Write-Host "============================================================"
+          Write-Host "============================================"
+          Write-Host "cloudflared output"
+          Write-Host "============================================"
+          Write-Host ""
 
           if (Test-Path $Stdout) {
-            Write-Host ""
-            Write-Host "---------- STDOUT ----------"
-            Get-Content $Stdout
+              Write-Host "---------- STDOUT ----------"
+              Get-Content $Stdout
           }
 
           if (Test-Path $Stderr) {
-            Write-Host ""
-            Write-Host "---------- STDERR ----------"
-            Get-Content $Stderr
+              Write-Host ""
+              Write-Host "---------- STDERR ----------"
+              Get-Content $Stderr
           }
 
-          if (!$Connected) {
-            throw @"
-cloudflared obtained a Quick Tunnel URL but did not register a healthy
-connection to the Cloudflare edge.
-
-This is a Cloudflare connectivity problem, not a noVNC problem.
-"@
+          if (!$TunnelUrl) {
+              throw "No trycloudflare.com URL was generated."
           }
 
-          if (!$Url) {
-            throw "Cloudflare tunnel connection was registered but no trycloudflare URL was found."
+          if (!$Registered) {
+              throw "Cloudflare generated a URL but did not register a tunnel connection."
           }
 
-          $NoVncUrl = "$Url/vnc.html"
+          $NoVncUrl = "$TunnelUrl/vnc.html"
 
+          Write-Host ""
           Write-Host ""
           Write-Host "============================================================"
           Write-Host "                    noVNC IS READY"
@@ -553,22 +630,36 @@ This is a Cloudflare connectivity problem, not a noVNC problem.
           Write-Host "============================================================"
           Write-Host ""
 
-          # Keep everything alive.
+          # ----------------------------------------------------------
+          # Keep all processes alive.
+          # ----------------------------------------------------------
+
           while ($true) {
 
-            Start-Sleep -Seconds 30
+              Start-Sleep -Seconds 30
 
-            $Now = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+              $Now = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
-            if ($TunnelProcess.HasExited) {
+              if ($TunnelProcess.HasExited) {
 
-              Write-Host ""
-              Write-Host "[$Now] cloudflared exited."
-              Write-Host "Workflow will stop so the failure is visible."
+                  Write-Host ""
+                  Write-Host "[$Now] cloudflared stopped."
+                  Write-Host ""
+                  Write-Host "========== FINAL cloudflared stdout =========="
 
-              break
-            }
+                  if (Test-Path $Stdout) {
+                      Get-Content $Stdout
+                  }
 
-            Write-Host "[$Now] Windows + VNC + noVNC + Cloudflare alive."
+                  Write-Host ""
+                  Write-Host "========== FINAL cloudflared stderr =========="
+
+                  if (Test-Path $Stderr) {
+                      Get-Content $Stderr
+                  }
+
+                  throw "cloudflared stopped while the Windows session was running."
+              }
+
+              Write-Host "[$Now] Windows + VNC + noVNC + Cloudflare alive."
           }
-
