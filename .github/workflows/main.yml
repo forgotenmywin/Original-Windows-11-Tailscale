@@ -1,4 +1,3 @@
-```yaml
 name: Windows 11 - RDP + Tailscale + noVNC
 
 on:
@@ -442,4 +441,3 @@ jobs:
             Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Session alive..."
             Start-Sleep -Seconds 300
           }
-```
